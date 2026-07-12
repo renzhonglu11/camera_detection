@@ -1,0 +1,220 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pi Camera Preview</title>
+  <style>
+    :root { color-scheme: dark; --bg: #0e1217; --panel: #151c24; --text: #eaf1f8; --muted: #9fb1c3; --accent: #6bd4ff; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: radial-gradient(circle at top, #203244, #0e1217 60%); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; }
+    .card { width: min(100%, 260px); background: rgba(21, 28, 36, .92); border: 1px solid rgba(255, 255, 255, .08); border-radius: 18px; padding: 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
+    video { width: min(100%, 184px); margin: 0 auto; border-radius: 12px; background: #000; display: block; }
+    .meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: .95rem; margin: 12px 0 18px; }
+    .status { margin: 0 0 16px; color: var(--accent); min-height: 1.4em; }
+    .section { margin-top: 18px; }
+    code { color: #fff; background: rgba(255, 255, 255, .08); padding: 2px 6px; border-radius: 6px; }
+    button { background: var(--accent); color: #06141f; border: 0; border-radius: 999px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Pi Camera Preview</h1>
+    <div class="meta">
+      <span>Backend: <code id="backendName">__BACKEND_NAME__</code></span>
+      <span>Resolution: <code id="resolutionValue">__WIDTH__x__HEIGHT__</code></span>
+      <span>FPS: <code id="fpsValue">__FPS__</code></span>
+    </div>
+    <p class="status" id="status"></p>
+    <video id="video" autoplay playsinline muted controls></video>
+    <div class="section" id="webrtcControls">
+      <button id="restart" type="button">Restart WebRTC</button>
+    </div>
+  </div>
+  <script>
+    const appConfig = {
+      backend: "__BACKEND_NAME__",
+      width: __WIDTH__,
+      height: __HEIGHT__,
+      fps: __FPS__
+    };
+
+    const backendEl = document.getElementById("backendName");
+    const resolutionEl = document.getElementById("resolutionValue");
+    const fpsEl = document.getElementById("fpsValue");
+    const statusEl = document.getElementById("status");
+    const videoEl = document.getElementById("video");
+    const restartBtn = document.getElementById("restart");
+
+    backendEl.textContent = appConfig.backend;
+    resolutionEl.textContent = `${appConfig.width}x${appConfig.height}`;
+    fpsEl.textContent = String(appConfig.fps);
+
+    let pc = null;
+    let candidatePollTimer = null;
+    let remoteCandidatesSeen = new Set();
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function updateState() {
+      if (!pc) {
+        return;
+      }
+
+      setStatus(`Peer ${pc.connectionState} | ICE ${pc.iceConnectionState} | Gather ${pc.iceGatheringState}`);
+    }
+
+    function stopCandidatePolling() {
+      if (candidatePollTimer) {
+        clearTimeout(candidatePollTimer);
+        candidatePollTimer = null;
+      }
+    }
+
+    function waitForIce(currentPc, timeoutMs) {
+      if (currentPc.iceGatheringState === "complete") {
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        const done = () => {
+          currentPc.removeEventListener("icegatheringstatechange", onChange);
+          clearTimeout(timer);
+          resolve();
+        };
+
+        const onChange = () => {
+          if (currentPc.iceGatheringState === "complete") {
+            done();
+          }
+        };
+
+        const timer = setTimeout(done, timeoutMs);
+        currentPc.addEventListener("icegatheringstatechange", onChange);
+      });
+    }
+
+    async function postCandidate(candidate) {
+      if (!candidate || candidate.sdpMLineIndex == null || !candidate.candidate) {
+        return;
+      }
+
+      await fetch("/api/webrtc/candidate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sdpMLineIndex: candidate.sdpMLineIndex,
+          candidate: candidate.candidate
+        })
+      });
+    }
+
+    async function pollCandidates(currentPc) {
+      if (pc !== currentPc) {
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/webrtc/candidates");
+        if (response.ok) {
+          const data = await response.json();
+          for (const item of data.candidates || []) {
+            const key = `${item.sdpMLineIndex}|${item.candidate}`;
+            if (remoteCandidatesSeen.has(key)) {
+              continue;
+            }
+
+            remoteCandidatesSeen.add(key);
+            await currentPc.addIceCandidate({
+              sdpMLineIndex: item.sdpMLineIndex,
+              candidate: item.candidate
+            });
+          }
+        }
+      } catch (_error) {
+      }
+
+      if (pc === currentPc && currentPc.connectionState !== "failed" && currentPc.connectionState !== "closed") {
+        candidatePollTimer = setTimeout(() => {
+          pollCandidates(currentPc);
+        }, 500);
+      }
+    }
+
+    async function start() {
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+
+      stopCandidatePolling();
+      remoteCandidatesSeen = new Set();
+      videoEl.srcObject = null;
+      setStatus("Negotiating WebRTC...");
+
+      pc = new RTCPeerConnection();
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          postCandidate(event.candidate).catch(() => {});
+        }
+      };
+      pc.ontrack = (event) => {
+        const stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+        videoEl.srcObject = stream;
+        videoEl.play().catch(() => {});
+        setStatus("Receiving video track...");
+      };
+      videoEl.onplaying = () => setStatus("WebRTC video playing");
+      videoEl.onerror = () => setStatus("Video element error");
+      pc.onconnectionstatechange = updateState;
+      pc.oniceconnectionstatechange = updateState;
+      pc.onicegatheringstatechange = updateState;
+
+      const offerResponse = await fetch("/api/webrtc/offer");
+      if (!offerResponse.ok) {
+        throw new Error(await offerResponse.text());
+      }
+
+      const offer = await offerResponse.json();
+      await pc.setRemoteDescription(offer);
+      updateState();
+      pollCandidates(pc);
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitForIce(pc, 3000);
+
+      const answerResponse = await fetch("/api/webrtc/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pc.localDescription)
+      });
+
+      if (!answerResponse.ok) {
+        throw new Error(await answerResponse.text());
+      }
+
+      updateState();
+    }
+
+    async function boot() {
+      try {
+        await start();
+      } catch (error) {
+        setStatus(error.message || String(error));
+      }
+    }
+
+    restartBtn.addEventListener("click", boot);
+    window.addEventListener("beforeunload", () => {
+      stopCandidatePolling();
+      if (pc) {
+        pc.close();
+      }
+    });
+
+    boot();
+  </script>
+</body>
+</html>

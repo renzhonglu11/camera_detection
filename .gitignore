@@ -1,0 +1,52 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+dist/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+install_manifest.txt
+.ninja_deps
+.ninja_log
+
+# Build outputs / binaries
+*.o
+*.obj
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+*.elf
+*.bin
+*.hex
+*.map
+*.d
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+core
+core.*
+
+# IDE/editor files
+.vscode/
+.idea/
+.clangd
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local configuration (contains sensitive info like IP, paths)
+.env.local
