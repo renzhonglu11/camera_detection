@@ -5,15 +5,27 @@
 #include <gst/app/gstappsrc.h>
 #include <gst/sdp/gstsdpmessage.h>
 
-#include <cstring>
+#include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <utility>
 
 namespace camera_detection {
 
+namespace {
+
+void release_wrapped_frame(gpointer data) {
+	delete static_cast<cv::Mat *>(data);
+}
+
+} // namespace
+
 WebRtcStreamer::WebRtcStreamer(const Options &options)
-	: width_(options.width), height_(options.height), fps_(options.fps),
-	  encoder_preference_(options.webrtc_encoder) {}
+	: width_(options.width), height_(options.height),
+	  stream_fps_(options.stream_fps),
+	  encoder_preference_(options.webrtc_encoder) {
+	frame_thread_ = std::thread(&WebRtcStreamer::frame_loop, this);
+}
 
 WebRtcStreamer::~WebRtcStreamer() { stop(); }
 
@@ -70,6 +82,50 @@ bool WebRtcStreamer::set_answer(const std::string &remote_answer_sdp,
 }
 
 void WebRtcStreamer::publish_frame(const cv::Mat &frame) {
+	{
+		std::lock_guard<std::mutex> lock(session_mutex_);
+		if (!session_active_ || awaiting_remote_answer_ ||
+			session_terminated_ || appsrc_ == nullptr) {
+			return;
+		}
+	}
+
+	cv::Mat latest = frame.clone();
+	if (latest.empty())
+		return;
+
+	{
+		std::lock_guard<std::mutex> lock(frame_mutex_);
+		latest_frame_ = std::move(latest);
+	}
+	frame_cv_.notify_one();
+}
+
+void WebRtcStreamer::frame_loop() {
+	const auto frame_period = std::chrono::nanoseconds(
+		1'000'000'000LL / std::max(1, stream_fps_));
+	std::unique_lock<std::mutex> lock(frame_mutex_);
+	frame_cv_.wait(lock,
+				   [this] { return !frame_running_ || !latest_frame_.empty(); });
+	auto next_frame_time = std::chrono::steady_clock::now();
+
+	while (frame_running_) {
+		const cv::Mat frame = latest_frame_;
+		lock.unlock();
+		push_frame_to_pipeline(frame);
+		lock.lock();
+
+		next_frame_time += frame_period;
+		const auto now = std::chrono::steady_clock::now();
+		if (next_frame_time <= now)
+			next_frame_time = now + frame_period;
+
+		frame_cv_.wait_until(lock, next_frame_time,
+						 [this] { return !frame_running_; });
+	}
+}
+
+void WebRtcStreamer::push_frame_to_pipeline(const cv::Mat &frame) {
 	GstElement *appsrc = nullptr;
 	{
 		std::lock_guard<std::mutex> lock(session_mutex_);
@@ -81,27 +137,21 @@ void WebRtcStreamer::publish_frame(const cv::Mat &frame) {
 		appsrc = GST_ELEMENT(gst_object_ref(appsrc_));
 	}
 
-	cv::Mat contiguous_frame = frame.isContinuous() ? frame : frame.clone();
+	const cv::Mat contiguous_frame =
+		frame.isContinuous() ? frame : frame.clone();
 	const std::size_t byte_count =
 		contiguous_frame.total() * contiguous_frame.elemSize();
-	GstBuffer *buffer = gst_buffer_new_allocate(nullptr, byte_count, nullptr);
+	auto *wrapped_frame = new cv::Mat(contiguous_frame);
+	GstBuffer *buffer = gst_buffer_new_wrapped_full(
+		GST_MEMORY_FLAG_READONLY, wrapped_frame->data, byte_count, 0, byte_count,
+		wrapped_frame, &release_wrapped_frame);
 	if (buffer == nullptr) {
+		delete wrapped_frame;
 		gst_object_unref(appsrc);
 		return;
 	}
-
-	GstMapInfo map_info{};
-	if (!gst_buffer_map(buffer, &map_info, GST_MAP_WRITE)) {
-		gst_buffer_unref(buffer);
-		gst_object_unref(appsrc);
-		return;
-	}
-
-	// copy frame data to buffer
-	std::memcpy(map_info.data, contiguous_frame.data, byte_count);
-	gst_buffer_unmap(buffer, &map_info);
 	GST_BUFFER_DURATION(buffer) =
-		gst_util_uint64_scale_int(1, GST_SECOND, fps_);
+		gst_util_uint64_scale_int(1, GST_SECOND, stream_fps_);
 
 	const GstFlowReturn flow =
 		gst_app_src_push_buffer(GST_APP_SRC(appsrc), buffer);
@@ -111,6 +161,14 @@ void WebRtcStreamer::publish_frame(const cv::Mat &frame) {
 }
 
 void WebRtcStreamer::stop() {
+	{
+		std::lock_guard<std::mutex> lock(frame_mutex_);
+		frame_running_ = false;
+	}
+	frame_cv_.notify_one();
+	if (frame_thread_.joinable())
+		frame_thread_.join();
+
 	std::unique_lock<std::mutex> lock(session_mutex_);
 	teardown_pipeline_locked(lock);
 }
@@ -269,13 +327,13 @@ bool WebRtcStreamer::create_pipeline_locked(std::string &error_message) {
 		   "stun-server=stun://stun.l.google.com:19302 "
 		<< "appsrc name=video_source is-live=true do-timestamp=true "
 		   "format=time "
-		   "block=false max-buffers=1 "
+		   "block=false max-buffers=2 "
 		<< "caps=\"video/x-raw,format=BGR,width=" << width_
-		<< ",height=" << height_ << ",framerate=" << fps_ << "/1\" ! "
-		<< "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 "
+		<< ",height=" << height_ << ",framerate=" << stream_fps_ << "/1\" ! "
+		<< "queue max-size-buffers=2 max-size-time=0 max-size-bytes=0 "
 		   "leaky=downstream ! "
 		<< "videoconvert ! video/x-raw,format=I420 ! "
-		<< "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 "
+		<< "queue max-size-buffers=2 max-size-time=0 max-size-bytes=0 "
 		   "leaky=downstream ! "
 		<< encoder->pipeline_segment
 		<< " ! video/x-h264,profile=constrained-baseline,level=(string)3.1,"
@@ -509,7 +567,7 @@ WebRtcStreamer::select_encoder(std::string &error_message) {
 
 		std::string segment = name;
 		if (std::string(name) == "openh264enc") {
-			segment += " bitrate=2000000 multi-thread=4 complexity=1";
+			segment += " bitrate=2000000 multi-thread=4 complexity=0";
 		} else if (std::string(name) == "v4l2h264enc") {
 			segment += " extra-controls=\"controls,video_b_frames=0,video_"
 					   "gop_size=30,video_bitrate=2000000\"";

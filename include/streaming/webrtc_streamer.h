@@ -65,6 +65,8 @@ class WebRtcStreamer
 	void handle_ice_gathering_state_change(GObject *object);
 	void handle_connection_state_change(GObject *object);
 	void handle_ice_candidate(guint mlineindex, const gchar *candidate);
+	void frame_loop();
+	void push_frame_to_pipeline(const cv::Mat &frame);
 	void bus_loop(GstBus *bus);
 	void mark_terminated(const std::string &reason);
 	bool has_element_factory(const char *name) const;
@@ -83,8 +85,13 @@ class WebRtcStreamer
 
 	int width_;
 	int height_;
-	int fps_;
+	int stream_fps_;
 	WebRtcEncoder encoder_preference_;
+	std::mutex frame_mutex_;
+	std::condition_variable frame_cv_;
+	cv::Mat latest_frame_;
+	bool frame_running_ = true;
+	std::thread frame_thread_;
 	GstElement *pipeline_ = nullptr;
 	GstElement *appsrc_ = nullptr;
 	GstElement *webrtcbin_ = nullptr;

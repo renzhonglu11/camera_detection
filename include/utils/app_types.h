@@ -10,6 +10,7 @@ struct Options {
 	int width = 512;
 	int height = 384;
 	int fps = 30;
+	int stream_fps = 20;
 	int preview_width = 320;
 	int display_every = 2;
 	int http_port = 8080;
@@ -24,7 +25,11 @@ struct Options {
 	int pan_deadzone = 30;
 	int pan_step = 1;
 	int pan_interval_ms = 60;
-	bool pan_invert = false;
+	bool pan_invert = true;
+	int pan_startup_hold_ms = 1000;
+	bool pan_return_center_on_exit = true;
+	int pan_return_step = 1;
+	int pan_return_step_ms = 80;
 	bool pan_test_sweep = false;
 	int pan_test_hold_ms = 1500;
 	int pan_test_step = 1;

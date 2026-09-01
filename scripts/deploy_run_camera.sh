@@ -42,7 +42,7 @@ Examples:
   $(basename "$0")
   $(basename "$0") mypi --run
   $(basename "$0") pi@raspberrypi.local --run --sudo
-  $(basename "$0") mypi --run -- --pan-tracking --pan-test-sweep --no-display
+  $(basename "$0") mypi --run -- --pan-test-sweep --no-display
 EOF
 }
 

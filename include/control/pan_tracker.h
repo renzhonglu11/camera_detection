@@ -19,6 +19,7 @@ public:
 	~PanTracker();
 
 	bool start();
+	void stop();
 	void update(const DetectionResult &detection, int frame_width);
 
 	bool enabled() const { return enabled_; }
@@ -34,12 +35,15 @@ private:
 	void motion_log_loop();
 	void log_motion(std::chrono::steady_clock::time_point now);
 	void run_test_sweep();
-	void test_move_to(int target_degree);
+	void move_to(int target_degree, int step, int step_ms,
+				 const char *motion_status);
 	void write_degree(int degree, std::chrono::steady_clock::time_point now);
 
 	Options options_;
 	bool enabled_ = false;
 	bool ready_ = false;
+	bool stopped_ = false;
+	bool in_test_sweep_ = false;
 	int current_degree_ = 90;
 	std::string status_ = "off";
 	std::ofstream motion_log_;

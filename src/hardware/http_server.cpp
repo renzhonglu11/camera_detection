@@ -124,7 +124,8 @@ std::optional<std::string> HttpServer::build_index_html() const {
 	replace_all(*html, "__BACKEND_NAME__", "webrtc");
 	replace_all(*html, "__WIDTH__", std::to_string(options_.width));
 	replace_all(*html, "__HEIGHT__", std::to_string(options_.height));
-	replace_all(*html, "__FPS__", std::to_string(options_.fps));
+	replace_all(*html, "__CAPTURE_FPS__", std::to_string(options_.fps));
+	replace_all(*html, "__STREAM_FPS__", std::to_string(options_.stream_fps));
 	return html;
 }
 

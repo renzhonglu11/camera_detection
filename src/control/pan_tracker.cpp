@@ -16,7 +16,7 @@ PanTracker::PanTracker(const Options &options)
 	  current_degree_(options.pan_center_degree) {}
 
 PanTracker::~PanTracker() {
-	stop_motion_log();
+	stop();
 }
 
 bool PanTracker::start() {
@@ -60,6 +60,11 @@ bool PanTracker::start() {
 	status_ = "init";
 	write_degree(current_degree_, std::chrono::steady_clock::now());
 	ready_ = true;
+	if (options_.pan_startup_hold_ms > 0) {
+		std::cout << "Pan startup: holding center for "
+				  << options_.pan_startup_hold_ms << " ms\n";
+		usleep(static_cast<useconds_t>(options_.pan_startup_hold_ms) * 1000);
+	}
 	status_ = "ready";
 	std::cout << "Pan tracking ready: device=" << options_.pan_i2c_device
 			  << " address=0x" << std::hex << I2C_ADDR << std::dec
@@ -74,6 +79,28 @@ bool PanTracker::start() {
 		run_test_sweep();
 
 	return true;
+}
+
+void PanTracker::stop() {
+	if (stopped_)
+		return;
+
+	stopped_ = true;
+	if (enabled_ && ready_ && options_.pan_return_center_on_exit) {
+		const int center = clamped_degree(options_.pan_center_degree);
+		if (current_degree_ != center) {
+			std::cout << "Pan shutdown: returning " << current_degree_ << " -> "
+					  << center << " deg"
+					  << " step=" << options_.pan_return_step
+					  << " step_ms=" << options_.pan_return_step_ms << '\n';
+			move_to(center, options_.pan_return_step,
+					options_.pan_return_step_ms, "return");
+		}
+		status_ = "centered";
+	}
+
+	ready_ = false;
+	stop_motion_log();
 }
 
 void PanTracker::update(const DetectionResult &detection, int frame_width) {
@@ -187,7 +214,7 @@ void PanTracker::log_motion(std::chrono::steady_clock::time_point now) {
 	std::ostringstream row;
 	row << elapsed_ms.count() << ',' << unix_ms.count() << ','
 		<< options_.pan_channel << ',' << current_degree_ << ',' << status_
-		<< ',' << (options_.pan_test_sweep ? 1 : 0) << '\n';
+		<< ',' << (in_test_sweep_ ? 1 : 0) << '\n';
 
 	{
 		std::lock_guard<std::mutex> lock(motion_log_mutex_);
@@ -204,27 +231,32 @@ void PanTracker::run_test_sweep() {
 	const useconds_t hold_us =
 		static_cast<useconds_t>(options_.pan_test_hold_ms) * 1000;
 
-	test_move_to(current_degree_);
+	in_test_sweep_ = true;
 	usleep(hold_us);
-	test_move_to(options_.pan_min_degree);
+	move_to(options_.pan_min_degree, options_.pan_test_step,
+			options_.pan_test_step_ms, "test");
 	usleep(hold_us);
-	test_move_to(options_.pan_max_degree);
+	move_to(options_.pan_max_degree, options_.pan_test_step,
+			options_.pan_test_step_ms, "test");
 	usleep(hold_us);
-	test_move_to(clamped_degree(options_.pan_center_degree));
+	move_to(clamped_degree(options_.pan_center_degree), options_.pan_test_step,
+			options_.pan_test_step_ms, "test");
 	usleep(hold_us);
+	in_test_sweep_ = false;
 	status_ = "ready";
 }
 
-void PanTracker::test_move_to(int target_degree) {
+void PanTracker::move_to(int target_degree, int step, int step_ms,
+					 const char *motion_status) {
 	target_degree = clamped_degree(target_degree);
-	const int step = std::max(1, options_.pan_test_step);
+	step = std::max(1, step);
 	const useconds_t step_us =
-		static_cast<useconds_t>(options_.pan_test_step_ms) * 1000;
+		static_cast<useconds_t>(std::max(1, step_ms)) * 1000;
 
 	while (current_degree_ != target_degree) {
 		const int delta = target_degree - current_degree_;
 		const int move = std::clamp(delta, -step, step);
-		status_ = "test";
+		status_ = motion_status;
 		write_degree(current_degree_ + move, std::chrono::steady_clock::now());
 		usleep(step_us);
 	}

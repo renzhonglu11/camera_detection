@@ -136,6 +136,21 @@ camera_detection::Options parse_args(int argc, char **argv) {
 			continue;
 		}
 
+		if (arg == "--no-pan-invert") {
+			options.pan_invert = false;
+			continue;
+		}
+
+		if (arg == "--pan-return-center-on-exit") {
+			options.pan_return_center_on_exit = true;
+			continue;
+		}
+
+		if (arg == "--no-pan-return-center-on-exit") {
+			options.pan_return_center_on_exit = false;
+			continue;
+		}
+
 		if (arg == "--pan-test-sweep") {
 			options.pan_test_sweep = true;
 			continue;
@@ -144,11 +159,15 @@ camera_detection::Options parse_args(int argc, char **argv) {
 		if (parse_int_arg(arg, "--width=", options.width) ||
 			parse_int_arg(arg, "--height=", options.height) ||
 			parse_int_arg(arg, "--fps=", options.fps) ||
+			parse_int_arg(arg, "--stream-fps=", options.stream_fps) ||
 			parse_int_arg(arg, "--preview-width=", options.preview_width) ||
 			parse_int_arg(arg, "--display-every=", options.display_every) ||
 			parse_int_arg(arg, "--http-port=", options.http_port) ||
 			parse_int_arg(arg, "--pan-step=", options.pan_step) ||
 			parse_int_arg(arg, "--pan-interval-ms=", options.pan_interval_ms) ||
+			parse_int_arg(arg, "--pan-return-step=", options.pan_return_step) ||
+			parse_int_arg(arg, "--pan-return-step-ms=",
+						  options.pan_return_step_ms) ||
 			parse_int_arg(arg, "--pan-test-hold-ms=",
 						  options.pan_test_hold_ms) ||
 			parse_int_arg(arg, "--pan-test-step=", options.pan_test_step) ||
@@ -166,7 +185,9 @@ camera_detection::Options parse_args(int argc, char **argv) {
 			parse_nonnegative_int_arg(arg, "--pan-max-degree=",
 									  options.pan_max_degree) ||
 			parse_nonnegative_int_arg(arg, "--pan-deadzone=",
-									  options.pan_deadzone)) {
+									  options.pan_deadzone) ||
+			parse_nonnegative_int_arg(arg, "--pan-startup-hold-ms=",
+									  options.pan_startup_hold_ms)) {
 			continue;
 		}
 
@@ -194,15 +215,27 @@ camera_detection::Options parse_args(int argc, char **argv) {
 		std::cerr
 			<< "Unknown argument: " << arg << '\n'
 			<< "Usage: camera_detection [--display] [--no-display] [--width=N] "
-			   "[--height=N] [--fps=N] "
+			   "[--height=N] [--fps=N] [--stream-fps=N] "
 			   "[--preview-width=N] [--display-every=N] [--http-port=N] "
 			   "[--webrtc-encoder=auto|h264-hw|openh264] "
 			   "[--pan-tracking] [--pan-i2c-device=PATH] [--pan-channel=N] "
 			   "[--pan-center-degree=N] [--pan-min-degree=N] "
 			   "[--pan-max-degree=N] [--pan-deadzone=N] [--pan-step=N] "
-			   "[--pan-interval-ms=N] [--pan-invert] [--pan-test-sweep] "
+			   "[--pan-interval-ms=N] [--pan-invert] [--no-pan-invert] "
+			   "[--pan-test-sweep] "
+			   "[--pan-startup-hold-ms=N] [--pan-return-center-on-exit] "
+			   "[--no-pan-return-center-on-exit] [--pan-return-step=N] "
+			   "[--pan-return-step-ms=N] "
 			   "[--pan-test-hold-ms=N] [--pan-test-step=N] "
 			   "[--pan-test-step-ms=N] [--pan-log-csv=PATH]\n";
+		std::exit(2);
+	}
+
+	if (options.pan_test_sweep)
+		options.pan_tracking = true;
+	if (options.stream_fps > options.fps) {
+		std::cerr << "Invalid --stream-fps value: " << options.stream_fps
+				  << " exceeds capture --fps=" << options.fps << '\n';
 		std::exit(2);
 	}
 
@@ -215,9 +248,23 @@ int main(int argc, char **argv) {
 	using namespace camera_detection;
 
 	install_signal_handlers();
-	gst_init(nullptr, nullptr);
-
 	const Options options = parse_args(argc, argv);
+	PanTracker pan_tracker(options);
+	const bool pan_started = pan_tracker.start();
+	std::cout << "Pan tracking: " << pan_tracker.status() << '\n';
+
+	if (options.pan_test_sweep) {
+		if (!pan_started || !pan_tracker.ready()) {
+			std::cerr << "Pan test sweep failed\n";
+			return 1;
+		}
+
+		std::cout << "Pan test sweep complete; exiting without ball detection\n";
+		pan_tracker.stop();
+		return 0;
+	}
+
+	gst_init(nullptr, nullptr);
 	const std::string pipeline = build_capture_pipeline(options);
 	cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
 	if (!cap.isOpened()) {
@@ -237,16 +284,15 @@ int main(int argc, char **argv) {
 	std::cout << "Stream backend: webrtc\n";
 	std::cout << "WebRTC encoder preference: "
 			  << webrtc_encoder_name(options.webrtc_encoder) << '\n';
-
-	PanTracker pan_tracker(options);
-	pan_tracker.start();
-	std::cout << "Pan tracking: " << pan_tracker.status() << '\n';
+	std::cout << "Capture FPS target: " << options.fps
+			  << " WebRTC FPS target: " << options.stream_fps << '\n';
 
 	if (options.show_preview)
 		cv::namedWindow("Camera", cv::WINDOW_AUTOSIZE);
 
 	cv::Mat frame;
 	cv::Mat preview_frame;
+	BallDetector ball_detector;
 	std::size_t capture_frame_count = 0;
 	std::size_t displayed_frame_count = 0;
 	std::size_t display_skip_counter = 0;
@@ -281,9 +327,9 @@ int main(int argc, char **argv) {
 			fps_window_start = now;
 		}
 
-		DetectionResult det = detect_ball(frame);
+		DetectionResult det = ball_detector.detect(frame);
 		// cv::Mat mask;
-		// DetectionResult det = detect_ball(frame, &mask);
+		// DetectionResult det = ball_detector.detect(frame, &mask);
 		pan_tracker.update(det, frame.cols);
 
 		// cv::Mat overlay = frame.clone();
@@ -347,6 +393,7 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	pan_tracker.stop();
 	http_server.stop();
 	webrtc_streamer->stop();
 	return 0;

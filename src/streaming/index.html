@@ -7,9 +7,10 @@
   <style>
     :root { color-scheme: dark; --bg: #0e1217; --panel: #151c24; --text: #eaf1f8; --muted: #9fb1c3; --accent: #6bd4ff; }
     body { margin: 0; font-family: system-ui, sans-serif; background: radial-gradient(circle at top, #203244, #0e1217 60%); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; }
-    .card { width: min(100%, 260px); background: rgba(21, 28, 36, .92); border: 1px solid rgba(255, 255, 255, .08); border-radius: 18px; padding: 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
-    video { width: min(100%, 184px); margin: 0 auto; border-radius: 12px; background: #000; display: block; }
+    .card { width: min(100%, 600px); box-sizing: border-box; background: rgba(21, 28, 36, .92); border: 1px solid rgba(255, 255, 255, .08); border-radius: 18px; padding: 20px; box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
+    video { width: 100%; height: auto; margin: 0 auto; border-radius: 12px; background: #000; display: block; }
     .meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: .95rem; margin: 12px 0 18px; }
+    .stats { margin-top: 0; }
     .status { margin: 0 0 16px; color: var(--accent); min-height: 1.4em; }
     .section { margin-top: 18px; }
     code { color: #fff; background: rgba(255, 255, 255, .08); padding: 2px 6px; border-radius: 6px; }
@@ -22,9 +23,17 @@
     <div class="meta">
       <span>Backend: <code id="backendName">__BACKEND_NAME__</code></span>
       <span>Resolution: <code id="resolutionValue">__WIDTH__x__HEIGHT__</code></span>
-      <span>FPS: <code id="fpsValue">__FPS__</code></span>
+      <span>Capture FPS: <code id="captureFpsValue">__CAPTURE_FPS__</code></span>
+      <span>Stream FPS: <code id="streamFpsValue">__STREAM_FPS__</code></span>
     </div>
     <p class="status" id="status"></p>
+    <div class="meta stats">
+      <span>Receive FPS: <code id="receiveFpsValue">--</code></span>
+      <span>Bitrate: <code id="bitrateValue">--</code></span>
+      <span>Lost: <code id="packetsLostValue">--</code></span>
+      <span>Jitter: <code id="jitterValue">--</code></span>
+      <span>Dropped: <code id="framesDroppedValue">--</code></span>
+    </div>
     <video id="video" autoplay playsinline muted controls></video>
     <div class="section" id="webrtcControls">
       <button id="restart" type="button">Restart WebRTC</button>
@@ -35,22 +44,32 @@
       backend: "__BACKEND_NAME__",
       width: __WIDTH__,
       height: __HEIGHT__,
-      fps: __FPS__
+      captureFps: __CAPTURE_FPS__,
+      streamFps: __STREAM_FPS__
     };
 
     const backendEl = document.getElementById("backendName");
     const resolutionEl = document.getElementById("resolutionValue");
-    const fpsEl = document.getElementById("fpsValue");
+    const captureFpsEl = document.getElementById("captureFpsValue");
+    const streamFpsEl = document.getElementById("streamFpsValue");
+    const receiveFpsEl = document.getElementById("receiveFpsValue");
+    const bitrateEl = document.getElementById("bitrateValue");
+    const packetsLostEl = document.getElementById("packetsLostValue");
+    const jitterEl = document.getElementById("jitterValue");
+    const framesDroppedEl = document.getElementById("framesDroppedValue");
     const statusEl = document.getElementById("status");
     const videoEl = document.getElementById("video");
     const restartBtn = document.getElementById("restart");
 
     backendEl.textContent = appConfig.backend;
     resolutionEl.textContent = `${appConfig.width}x${appConfig.height}`;
-    fpsEl.textContent = String(appConfig.fps);
+    captureFpsEl.textContent = String(appConfig.captureFps);
+    streamFpsEl.textContent = String(appConfig.streamFps);
 
     let pc = null;
     let candidatePollTimer = null;
+    let statsPollTimer = null;
+    let previousInboundStats = null;
     let remoteCandidatesSeen = new Set();
 
     function setStatus(text) {
@@ -69,6 +88,87 @@
       if (candidatePollTimer) {
         clearTimeout(candidatePollTimer);
         candidatePollTimer = null;
+      }
+    }
+
+    function resetStats() {
+      if (statsPollTimer) {
+        clearTimeout(statsPollTimer);
+        statsPollTimer = null;
+      }
+      previousInboundStats = null;
+      receiveFpsEl.textContent = "--";
+      bitrateEl.textContent = "--";
+      packetsLostEl.textContent = "--";
+      jitterEl.textContent = "--";
+      framesDroppedEl.textContent = "--";
+    }
+
+    async function pollStats(currentPc) {
+      if (pc !== currentPc || currentPc.connectionState === "closed") {
+        return;
+      }
+
+      try {
+        const reports = await currentPc.getStats();
+        let inbound = null;
+        reports.forEach((report) => {
+          if (report.type === "inbound-rtp" &&
+              !report.isRemote &&
+              (report.kind === "video" || report.mediaType === "video")) {
+            inbound = report;
+          }
+        });
+
+        if (inbound) {
+          let receiveFps = Number(inbound.framesPerSecond);
+          if ((!Number.isFinite(receiveFps) || receiveFps < 0) &&
+              previousInboundStats &&
+              Number.isFinite(inbound.framesDecoded) &&
+              Number.isFinite(previousInboundStats.framesDecoded)) {
+            const elapsedSeconds =
+              (inbound.timestamp - previousInboundStats.timestamp) / 1000;
+            if (elapsedSeconds > 0) {
+              receiveFps =
+                (inbound.framesDecoded - previousInboundStats.framesDecoded) /
+                elapsedSeconds;
+            }
+          }
+
+          if (Number.isFinite(receiveFps) && receiveFps >= 0) {
+            receiveFpsEl.textContent = receiveFps.toFixed(1);
+          }
+
+          if (previousInboundStats &&
+              Number.isFinite(inbound.bytesReceived) &&
+              Number.isFinite(previousInboundStats.bytesReceived)) {
+            const elapsedSeconds =
+              (inbound.timestamp - previousInboundStats.timestamp) / 1000;
+            if (elapsedSeconds > 0) {
+              const kbps =
+                (inbound.bytesReceived - previousInboundStats.bytesReceived) *
+                8 / elapsedSeconds / 1000;
+              bitrateEl.textContent = `${Math.max(0, kbps).toFixed(0)} kbps`;
+            }
+          }
+
+          packetsLostEl.textContent = String(inbound.packetsLost ?? 0);
+          const jitterMs = Number(inbound.jitter) * 1000;
+          jitterEl.textContent = Number.isFinite(jitterMs)
+            ? `${jitterMs.toFixed(1)} ms`
+            : "--";
+          framesDroppedEl.textContent = String(inbound.framesDropped ?? 0);
+          previousInboundStats = {
+            timestamp: inbound.timestamp,
+            bytesReceived: inbound.bytesReceived,
+            framesDecoded: inbound.framesDecoded
+          };
+        }
+      } catch (_error) {
+      }
+
+      if (pc === currentPc && currentPc.connectionState !== "closed") {
+        statsPollTimer = setTimeout(() => pollStats(currentPc), 1000);
       }
     }
 
@@ -149,6 +249,7 @@
       }
 
       stopCandidatePolling();
+      resetStats();
       remoteCandidatesSeen = new Set();
       videoEl.srcObject = null;
       setStatus("Negotiating WebRTC...");
@@ -163,6 +264,7 @@
         const stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
         videoEl.srcObject = stream;
         videoEl.play().catch(() => {});
+        pollStats(pc);
         setStatus("Receiving video track...");
       };
       videoEl.onplaying = () => setStatus("WebRTC video playing");
@@ -209,6 +311,7 @@
     restartBtn.addEventListener("click", boot);
     window.addEventListener("beforeunload", () => {
       stopCandidatePolling();
+      resetStats();
       if (pc) {
         pc.close();
       }
