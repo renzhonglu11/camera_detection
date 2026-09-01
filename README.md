@@ -21,11 +21,47 @@ cmake -S . -B build-cross -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake
 cmake --build build-cross -j
 ```
 
+### Minimal local replay build (no Raspberry Pi modules)
+
+```bash
+cmake -S . -B build -DCAMERA_DETECTION_BUILD_PI_APP=OFF
+cmake --build build -j
+```
+
 ## Deploy
 
 ```bash
 ./scripts/deploy_run_camera.sh mypi --run
 ```
+
+## Offline replay (T01)
+
+The local/CI-safe path is to use a recorded MP4 file and run in replay mode.
+
+```bash
+./build/camera_detection \
+  --input=/home/rz/cam_proj/PCA9685/example/camera_detection/test_data/blue_ball_basic.mp4 \
+  --replay=unpaced \
+  --no-display \
+  --no-stream
+```
+
+Options:
+
+- `--input=PATH` selects a file instead of camera input.
+- `--replay=unpaced` outputs frames as fast as possible.
+- `--replay=realtime` preserves source timestamps when available.
+- `--no-stream` skips WebRTC output.
+- `--no-display` skips GUI display.
+
+If the same file is stable/reusable, run three times to match the T01 acceptance
+expectation for reproducible frame count:
+
+```bash
+./scripts/run_t01_replay.sh --input=/home/rz/cam_proj/PCA9685/example/camera_detection/test_data/blue_ball_basic.mp4
+```
+
+If you only need a one-shot check, add `--runs=1`.
 
 ## Streaming
 
