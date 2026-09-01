@@ -1,11 +1,8 @@
-#include "camera/camera_pipeline.h"
-#include "control/pan_tracker.h"
-#include "hardware/http_server.h"
-#include "streaming/webrtc_streamer.h"
+#include "camera/frame_source.h"
+#include "detection/ball_detector.h"
 #include "utils/app_types.h"
 #include "utils/signal_utils.h"
 
-#include <gst/gst.h>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/opencv.hpp>
 
@@ -17,7 +14,17 @@
 #include <optional>
 #include <string>
 
-#include "detection/ball_detector.h"
+#ifndef CAMERA_DETECTION_WITH_PI_MODULES
+#define CAMERA_DETECTION_WITH_PI_MODULES 1
+#endif
+
+#if CAMERA_DETECTION_WITH_PI_MODULES
+#include "control/pan_tracker.h"
+#include "hardware/http_server.h"
+#include "streaming/webrtc_streamer.h"
+
+#include <gst/gst.h>
+#endif
 
 namespace {
 
@@ -88,6 +95,19 @@ parse_webrtc_encoder(std::string value) {
 	return std::nullopt;
 }
 
+std::optional<camera_detection::ReplayMode> parse_replay_mode(
+	std::string value) {
+	using camera_detection::ReplayMode;
+
+	value = to_lower_copy(std::move(value));
+	if (value == "unpaced")
+		return ReplayMode::Unpaced;
+	if (value == "realtime")
+		return ReplayMode::Realtime;
+
+	return std::nullopt;
+}
+
 const char *webrtc_encoder_name(camera_detection::WebRtcEncoder encoder) {
 	using camera_detection::WebRtcEncoder;
 
@@ -118,6 +138,16 @@ camera_detection::Options parse_args(int argc, char **argv) {
 
 		if (arg == "--display") {
 			options.show_preview = true;
+			continue;
+		}
+
+		if (arg == "--no-stream") {
+			options.stream_enabled = false;
+			continue;
+		}
+
+		if (arg == "--stream") {
+			options.stream_enabled = true;
 			continue;
 		}
 
@@ -200,6 +230,21 @@ camera_detection::Options parse_args(int argc, char **argv) {
 			continue;
 		}
 
+		if (parse_string_arg(arg, "--input=", options.input_path)) {
+			continue;
+		}
+
+		if (parse_string_arg(arg, "--replay=", value)) {
+			const auto replay_mode = parse_replay_mode(value);
+			if (!replay_mode) {
+				std::cerr << "Invalid --replay value: " << value << '\n';
+				std::exit(2);
+			}
+
+			options.replay_mode = *replay_mode;
+			continue;
+		}
+
 		if (parse_string_arg(arg, "--webrtc-encoder=", value)) {
 			const auto encoder = parse_webrtc_encoder(value);
 			if (!encoder) {
@@ -214,7 +259,9 @@ camera_detection::Options parse_args(int argc, char **argv) {
 
 		std::cerr
 			<< "Unknown argument: " << arg << '\n'
-			<< "Usage: camera_detection [--display] [--no-display] [--width=N] "
+			<< "Usage: camera_detection [--display] [--no-display] [--stream] "
+			   "[--no-stream] [--input=PATH] "
+			   "[--replay=unpaced|realtime] [--width=N] "
 			   "[--height=N] [--fps=N] [--stream-fps=N] "
 			   "[--preview-width=N] [--display-every=N] [--http-port=N] "
 			   "[--webrtc-encoder=auto|h264-hw|openh264] "
@@ -233,6 +280,11 @@ camera_detection::Options parse_args(int argc, char **argv) {
 
 	if (options.pan_test_sweep)
 		options.pan_tracking = true;
+	if (!options.input_path.empty() && options.pan_tracking) {
+		std::cerr << "Offline input cannot be combined with pan tracking or "
+					 "pan test sweep; no servo output is allowed during replay\n";
+		std::exit(2);
+	}
 	if (options.stream_fps > options.fps) {
 		std::cerr << "Invalid --stream-fps value: " << options.stream_fps
 				  << " exceeds capture --fps=" << options.fps << '\n';
@@ -249,6 +301,19 @@ int main(int argc, char **argv) {
 
 	install_signal_handlers();
 	const Options options = parse_args(argc, argv);
+
+#if !CAMERA_DETECTION_WITH_PI_MODULES
+	if (options.input_path.empty()) {
+		std::cerr << "This build supports file replay only; pass --input=PATH\n";
+		return 2;
+	}
+	if (options.stream_enabled) {
+		std::cerr << "This build has no streaming modules; pass --no-stream\n";
+		return 2;
+	}
+#endif
+
+#if CAMERA_DETECTION_WITH_PI_MODULES
 	PanTracker pan_tracker(options);
 	const bool pan_started = pan_tracker.start();
 	std::cout << "Pan tracking: " << pan_tracker.status() << '\n';
@@ -265,34 +330,67 @@ int main(int argc, char **argv) {
 	}
 
 	gst_init(nullptr, nullptr);
-	const std::string pipeline = build_capture_pipeline(options);
-	cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
-	if (!cap.isOpened()) {
-		std::cerr << "Camera open failed\n";
-		return -1;
+#endif
+
+	FrameSource frame_source(options);
+	if (!frame_source.open()) {
+		std::cerr << frame_source.error_message() << '\n';
+#if CAMERA_DETECTION_WITH_PI_MODULES
+		pan_tracker.stop();
+#endif
+		return 1;
 	}
 
-	auto webrtc_streamer = std::make_unique<WebRtcStreamer>(options);
-	HttpServer http_server(options, webrtc_streamer.get());
-	if (!http_server.start()) {
-		std::cerr << "Failed to start HTTP server on port " << options.http_port
-				  << '\n';
-		return -1;
+	if (frame_source.is_file_source()) {
+		std::cout << "Input mode: offline file\n"
+				  << "Input path: " << options.input_path << '\n'
+				  << "Replay mode: "
+				  << (options.replay_mode == ReplayMode::Realtime ? "realtime"
+																			 : "unpaced")
+				  << '\n'
+				  << "Source FPS: " << frame_source.source_fps()
+				  << " expected frames: "
+				  << frame_source.expected_frame_count() << '\n';
+	} else {
+		std::cout << "Input mode: Raspberry Pi camera\n";
 	}
 
-	std::cout << "Preview page: http://<pi-ip>:" << options.http_port << "/\n";
-	std::cout << "Stream backend: webrtc\n";
-	std::cout << "WebRTC encoder preference: "
-			  << webrtc_encoder_name(options.webrtc_encoder) << '\n';
+#if CAMERA_DETECTION_WITH_PI_MODULES
+	std::unique_ptr<WebRtcStreamer> webrtc_streamer;
+	std::unique_ptr<HttpServer> http_server;
+	if (options.stream_enabled) {
+		webrtc_streamer = std::make_unique<WebRtcStreamer>(options);
+		http_server =
+			std::make_unique<HttpServer>(options, webrtc_streamer.get());
+		if (!http_server->start()) {
+			std::cerr << "Failed to start HTTP server on port "
+					  << options.http_port << '\n';
+			pan_tracker.stop();
+			return 1;
+		}
+
+		std::cout << "Preview page: http://<pi-ip>:" << options.http_port
+				  << "/\n";
+		std::cout << "Stream backend: webrtc\n";
+		std::cout << "WebRTC encoder preference: "
+				  << webrtc_encoder_name(options.webrtc_encoder) << '\n';
+	} else {
+		std::cout << "Streaming: disabled\n";
+	}
+#else
+	std::cout << "Streaming: unavailable in minimal replay build\n";
+#endif
+
 	std::cout << "Capture FPS target: " << options.fps
 			  << " WebRTC FPS target: " << options.stream_fps << '\n';
 
 	if (options.show_preview)
 		cv::namedWindow("Camera", cv::WINDOW_AUTOSIZE);
 
-	cv::Mat frame;
 	cv::Mat preview_frame;
 	BallDetector ball_detector;
+	FramePacket packet;
+	std::uint64_t processed_frame_count = 0;
 	std::size_t capture_frame_count = 0;
 	std::size_t displayed_frame_count = 0;
 	std::size_t display_skip_counter = 0;
@@ -300,12 +398,16 @@ int main(int argc, char **argv) {
 	double display_fps = 0.0;
 	auto fps_window_start = std::chrono::steady_clock::now();
 
-	// Main loop: capture frames, publish to WebRTC, and optionally display
-	// preview
+	const bool needs_output_frame =
+		options.show_preview || options.stream_enabled;
+
+	// Main loop: read frames, detect the ball, and optionally publish/display.
 	while (!stop_requested()) {
-		if (!cap.read(frame) || frame.empty())
+		if (!frame_source.read(packet))
 			break;
 
+		cv::Mat &frame = packet.frame;
+		++processed_frame_count;
 		++capture_frame_count;
 		const auto now = std::chrono::steady_clock::now();
 		const auto elapsed =
@@ -328,45 +430,48 @@ int main(int argc, char **argv) {
 		}
 
 		DetectionResult det = ball_detector.detect(frame);
-		// cv::Mat mask;
-		// DetectionResult det = ball_detector.detect(frame, &mask);
+
+#if CAMERA_DETECTION_WITH_PI_MODULES
 		pan_tracker.update(det, frame.cols);
+#endif
 
-		// cv::Mat overlay = frame.clone();
-		// overlay.setTo(cv::Scalar(255, 0, 255), mask); // 把 mask 区域染成紫色
-		// cv::addWeighted(overlay, 0.35, frame, 0.65, 0.0, frame);
+		if (needs_output_frame) {
+			cv::putText(
+				frame, cv::format("CAP %.1f DISP %.1f", capture_fps, display_fps),
+				cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8,
+				cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
 
-		cv::putText(frame,
-					cv::format("CAP %.1f DISP %.1f", capture_fps, display_fps),
-					cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8,
-					cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
+			if (det.detected) {
+				cv::circle(frame, det.center, static_cast<int>(det.radius),
+						   cv::Scalar(0, 0, 255), 2);
+				cv::circle(frame, det.center, 4, cv::Scalar(255, 0, 0), -1);
+				cv::putText(
+					frame,
+					cv::format("Blue ball x=%.0f y=%.0f r=%.1f", det.center.x,
+							   det.center.y, det.radius),
+					cv::Point(10, 60), cv::FONT_HERSHEY_SIMPLEX, 0.7,
+					cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+			} else {
+				cv::putText(frame, "Blue ball: not found", cv::Point(10, 60),
+							cv::FONT_HERSHEY_SIMPLEX, 0.7,
+							cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+			}
 
-		if (det.detected) {
-			cv::circle(frame, det.center, static_cast<int>(det.radius),
-					   cv::Scalar(0, 0, 255), 2);
-
-			cv::circle(frame, det.center, 4, cv::Scalar(255, 0, 0), -1);
-
-			cv::putText(frame,
-						cv::format("Blue ball x=%.0f y=%.0f r=%.1f",
-								   det.center.x, det.center.y, det.radius),
-						cv::Point(10, 60), cv::FONT_HERSHEY_SIMPLEX, 0.7,
-						cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
-		} else {
-			cv::putText(frame, "Blue ball: not found", cv::Point(10, 60),
-						cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2,
-						cv::LINE_AA);
+#if CAMERA_DETECTION_WITH_PI_MODULES
+			if (pan_tracker.enabled()) {
+				cv::putText(frame,
+							cv::format("Pan %d deg %s", pan_tracker.angle(),
+									   pan_tracker.status().c_str()),
+							cv::Point(10, 90), cv::FONT_HERSHEY_SIMPLEX, 0.7,
+							cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
+			}
+#endif
 		}
 
-		if (pan_tracker.enabled()) {
-			cv::putText(frame,
-						cv::format("Pan %d deg %s", pan_tracker.angle(),
-								   pan_tracker.status().c_str()),
-						cv::Point(10, 90), cv::FONT_HERSHEY_SIMPLEX, 0.7,
-						cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
-		}
-
-		webrtc_streamer->publish_frame(frame);
+#if CAMERA_DETECTION_WITH_PI_MODULES
+		if (webrtc_streamer)
+			webrtc_streamer->publish_frame(frame);
+#endif
 
 		if (options.show_preview) {
 			++display_skip_counter;
@@ -393,8 +498,23 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	int exit_code = 0;
+	if (frame_source.failed()) {
+		std::cerr << frame_source.error_message() << '\n';
+		exit_code = 1;
+	} else if (frame_source.end_of_stream()) {
+		std::cout << "offline_replay_complete frames=" << processed_frame_count
+				  << " expected_frames=" << frame_source.expected_frame_count()
+				  << '\n';
+	}
+
+#if CAMERA_DETECTION_WITH_PI_MODULES
 	pan_tracker.stop();
-	http_server.stop();
-	webrtc_streamer->stop();
-	return 0;
+	if (http_server)
+		http_server->stop();
+	if (webrtc_streamer)
+		webrtc_streamer->stop();
+#endif
+
+	return exit_code;
 }

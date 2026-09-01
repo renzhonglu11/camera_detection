@@ -5,6 +5,7 @@
 namespace camera_detection {
 
 enum class WebRtcEncoder { Auto, H264Hardware, OpenH264 };
+enum class ReplayMode { Unpaced, Realtime };
 
 struct Options {
 	int width = 512;
@@ -15,6 +16,9 @@ struct Options {
 	int display_every = 2;
 	int http_port = 8080;
 	bool show_preview = false;
+	bool stream_enabled = true;
+	std::string input_path;
+	ReplayMode replay_mode = ReplayMode::Unpaced;
 	WebRtcEncoder webrtc_encoder = WebRtcEncoder::Auto;
 	bool pan_tracking = false;
 	std::string pan_i2c_device = "/dev/i2c-1";
