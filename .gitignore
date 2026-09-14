@@ -4,6 +4,7 @@ build-*/
 cmake-build-*/
 out/
 dist/
+results/
 
 # CMake generated files
 CMakeCache.txt
@@ -29,6 +30,8 @@ install_manifest.txt
 *.hex
 *.map
 *.d
+__pycache__/
+*.py[cod]
 
 # Logs and temporary files
 *.log

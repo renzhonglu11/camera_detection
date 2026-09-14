@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 namespace camera_detection {
@@ -19,6 +20,8 @@ struct Options {
 	bool stream_enabled = true;
 	std::string input_path;
 	ReplayMode replay_mode = ReplayMode::Unpaced;
+	std::string metrics_dir;
+	std::size_t metrics_queue_capacity = 4096;
 	WebRtcEncoder webrtc_encoder = WebRtcEncoder::Auto;
 	bool pan_tracking = false;
 	std::string pan_i2c_device = "/dev/i2c-1";

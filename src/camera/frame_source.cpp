@@ -85,9 +85,10 @@ bool FrameSource::read(FramePacket &packet) {
 
 	packet.frame_id = next_frame_id_++;
 	packet.media_pts = current_media_pts();
+	packet.scheduled_release.reset();
 	if (is_file_source() && options_.replay_mode == ReplayMode::Realtime &&
 		packet.media_pts) {
-		pace_realtime(*packet.media_pts);
+		packet.scheduled_release = pace_realtime(*packet.media_pts);
 	}
 	packet.received_at = std::chrono::steady_clock::now();
 	packet.frame = std::move(frame);
@@ -133,15 +134,17 @@ std::optional<std::chrono::nanoseconds> FrameSource::current_media_pts() {
 	return pts;
 }
 
-void FrameSource::pace_realtime(std::chrono::nanoseconds media_pts) {
+std::chrono::steady_clock::time_point
+FrameSource::pace_realtime(std::chrono::nanoseconds media_pts) {
 	if (!replay_start_pts_) {
 		replay_start_pts_ = media_pts;
 		replay_start_time_ = std::chrono::steady_clock::now();
-		return;
+		return replay_start_time_;
 	}
 
 	const auto target_time = replay_start_time_ + (media_pts - *replay_start_pts_);
 	std::this_thread::sleep_until(target_time);
+	return target_time;
 }
 
 } // namespace camera_detection

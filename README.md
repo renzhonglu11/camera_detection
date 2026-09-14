@@ -63,6 +63,30 @@ expectation for reproducible frame count:
 
 If you only need a one-shot check, add `--runs=1`.
 
+## Pipeline metrics (T02)
+
+Enable bounded per-frame metrics by selecting an output directory:
+
+```bash
+./build/camera_detection \
+  --input=./test_data/blue_ball_basic.mp4 \
+  --replay=unpaced \
+  --no-display \
+  --no-stream \
+  --metrics-dir=./results/t02-example
+
+python3 ./scripts/analyze_metrics.py ./results/t02-example
+```
+
+Run the repeatable unpaced/realtime baseline with:
+
+```bash
+./scripts/run_t02_benchmark.sh
+```
+
+See `docs/benchmark.md` for timestamp boundaries, CSV schemas, Raspberry Pi
+commands, and measurement limitations.
+
 ## Streaming
 
 Camera capture and ball detection run at 30 FPS by default. WebRTC publishing
@@ -75,6 +99,25 @@ Configure the two rates independently:
 ```bash
 ./camera_detection --fps=30 --stream-fps=20 --no-display
 ```
+
+When streaming a file, `--width` and `--height` must match the file's actual
+frame size. File input is not automatically resized, while these options are
+used for the WebRTC raw-video caps. For the included 1280×720 sample:
+
+```bash
+./camera_detection \
+  --input=./test_data/blue_ball_basic.mp4 \
+  --replay=realtime \
+  --width=1280 \
+  --height=720 \
+  --no-display \
+  --stream \
+  --metrics-dir=./results/t02-webrtc-1280x720
+```
+
+A mismatch such as a 1280×720 Mat with 512×384 caps produces horizontal stripes
+and repeated image regions even when WebRTC reports no packet loss. See
+`docs/benchmark.md` for the diagnostic details and acceptance checks.
 
 `--stream-fps` must not exceed `--fps`. The WebRTC path keeps only the latest
 camera frame and uses small leaky queues, favoring bounded latency over

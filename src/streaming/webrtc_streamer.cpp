@@ -20,10 +20,11 @@ void release_wrapped_frame(gpointer data) {
 
 } // namespace
 
-WebRtcStreamer::WebRtcStreamer(const Options &options)
+WebRtcStreamer::WebRtcStreamer(const Options &options,
+						   PipelineMetrics *metrics)
 	: width_(options.width), height_(options.height),
 	  stream_fps_(options.stream_fps),
-	  encoder_preference_(options.webrtc_encoder) {
+	  encoder_preference_(options.webrtc_encoder), metrics_(metrics) {
 	frame_thread_ = std::thread(&WebRtcStreamer::frame_loop, this);
 }
 
@@ -81,24 +82,34 @@ bool WebRtcStreamer::set_answer(const std::string &remote_answer_sdp,
 	return true;
 }
 
-void WebRtcStreamer::publish_frame(const cv::Mat &frame) {
+PublishStatus WebRtcStreamer::publish_frame(const cv::Mat &frame,
+									 const FrameMeta &meta) {
 	{
 		std::lock_guard<std::mutex> lock(session_mutex_);
 		if (!session_active_ || awaiting_remote_answer_ ||
 			session_terminated_ || appsrc_ == nullptr) {
-			return;
+			return PublishStatus::NoSession;
 		}
 	}
 
 	cv::Mat latest = frame.clone();
 	if (latest.empty())
-		return;
+		return PublishStatus::CloneFailed;
 
+	bool overwrote_unconsumed_frame = false;
 	{
 		std::lock_guard<std::mutex> lock(frame_mutex_);
-		latest_frame_ = std::move(latest);
+		overwrote_unconsumed_frame =
+			latest_frame_.generation != 0 &&
+			last_consumed_generation_ < latest_frame_.generation;
+		latest_frame_.frame = std::move(latest);
+		latest_frame_.meta = meta;
+		latest_frame_.generation = next_generation_++;
 	}
+	if (overwrote_unconsumed_frame && metrics_ != nullptr)
+		metrics_->record_latest_frame_overwrite();
 	frame_cv_.notify_one();
+	return PublishStatus::Accepted;
 }
 
 void WebRtcStreamer::frame_loop() {
@@ -106,11 +117,12 @@ void WebRtcStreamer::frame_loop() {
 		1'000'000'000LL / std::max(1, stream_fps_));
 	std::unique_lock<std::mutex> lock(frame_mutex_);
 	frame_cv_.wait(lock,
-				   [this] { return !frame_running_ || !latest_frame_.empty(); });
+				   [this] { return !frame_running_ || !latest_frame_.frame.empty(); });
 	auto next_frame_time = std::chrono::steady_clock::now();
 
 	while (frame_running_) {
-		const cv::Mat frame = latest_frame_;
+		const PublishedFrame frame = latest_frame_;
+		last_consumed_generation_ = frame.generation;
 		lock.unlock();
 		push_frame_to_pipeline(frame);
 		lock.lock();
@@ -125,7 +137,7 @@ void WebRtcStreamer::frame_loop() {
 	}
 }
 
-void WebRtcStreamer::push_frame_to_pipeline(const cv::Mat &frame) {
+void WebRtcStreamer::push_frame_to_pipeline(const PublishedFrame &published) {
 	GstElement *appsrc = nullptr;
 	{
 		std::lock_guard<std::mutex> lock(session_mutex_);
@@ -137,8 +149,9 @@ void WebRtcStreamer::push_frame_to_pipeline(const cv::Mat &frame) {
 		appsrc = GST_ELEMENT(gst_object_ref(appsrc_));
 	}
 
-	const cv::Mat contiguous_frame =
-		frame.isContinuous() ? frame : frame.clone();
+	const cv::Mat contiguous_frame = published.frame.isContinuous()
+								 ? published.frame
+								 : published.frame.clone();
 	const std::size_t byte_count =
 		contiguous_frame.total() * contiguous_frame.elemSize();
 	auto *wrapped_frame = new cv::Mat(contiguous_frame);
@@ -148,6 +161,14 @@ void WebRtcStreamer::push_frame_to_pipeline(const cv::Mat &frame) {
 	if (buffer == nullptr) {
 		delete wrapped_frame;
 		gst_object_unref(appsrc);
+		if (metrics_ != nullptr) {
+			const bool repeated = last_pushed_source_frame_id_ &&
+				*last_pushed_source_frame_id_ == published.meta.source_frame_id;
+			metrics_->record_stream_push(
+				{next_stream_push_id_++, published.meta.source_frame_id,
+				 published.meta.received_at, PipelineClock::now(), repeated, -1000});
+			last_pushed_source_frame_id_ = published.meta.source_frame_id;
+		}
 		return;
 	}
 	GST_BUFFER_DURATION(buffer) =
@@ -155,7 +176,17 @@ void WebRtcStreamer::push_frame_to_pipeline(const cv::Mat &frame) {
 
 	const GstFlowReturn flow =
 		gst_app_src_push_buffer(GST_APP_SRC(appsrc), buffer);
+	const auto pushed_at = PipelineClock::now();
 	gst_object_unref(appsrc);
+	if (metrics_ != nullptr) {
+		const bool repeated = last_pushed_source_frame_id_ &&
+			*last_pushed_source_frame_id_ == published.meta.source_frame_id;
+		metrics_->record_stream_push(
+			{next_stream_push_id_++, published.meta.source_frame_id,
+			 published.meta.received_at, pushed_at, repeated,
+			 static_cast<int>(flow)});
+		last_pushed_source_frame_id_ = published.meta.source_frame_id;
+	}
 	if (flow != GST_FLOW_OK)
 		mark_terminated("WebRTC appsrc push failed");
 }

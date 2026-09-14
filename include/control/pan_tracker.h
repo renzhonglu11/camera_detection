@@ -5,9 +5,11 @@
 
 #include <condition_variable>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -20,7 +22,8 @@ public:
 
 	bool start();
 	void stop();
-	void update(const DetectionResult &detection, int frame_width);
+	void update(const DetectionResult &detection, int frame_width,
+			std::uint64_t source_frame_id);
 
 	bool enabled() const { return enabled_; }
 	bool ready() const { return ready_; }
@@ -33,11 +36,17 @@ private:
 	void open_motion_log();
 	void stop_motion_log();
 	void motion_log_loop();
-	void log_motion(std::chrono::steady_clock::time_point now);
+	void log_motion(std::chrono::steady_clock::time_point write_begin,
+					std::chrono::steady_clock::time_point write_end,
+					std::optional<std::uint64_t> source_frame_id,
+					std::optional<float> pixel_error, int previous_degree,
+					int requested_degree, const char *write_result);
 	void run_test_sweep();
 	void move_to(int target_degree, int step, int step_ms,
 				 const char *motion_status);
-	void write_degree(int degree, std::chrono::steady_clock::time_point now);
+	void write_degree(int degree, std::chrono::steady_clock::time_point now,
+				  std::optional<std::uint64_t> source_frame_id = std::nullopt,
+				  std::optional<float> pixel_error = std::nullopt);
 
 	Options options_;
 	bool enabled_ = false;
