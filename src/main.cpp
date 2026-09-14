@@ -1,6 +1,7 @@
 #include "camera/frame_source.h"
 #include "detection/ball_detector.h"
 #include "utils/app_types.h"
+#include "utils/pipeline_metrics.h"
 #include "utils/signal_utils.h"
 
 #include <opencv2/core/mat.hpp>
@@ -11,8 +12,10 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <string>
+#include <vector>
 
 #ifndef CAMERA_DETECTION_WITH_PI_MODULES
 #define CAMERA_DETECTION_WITH_PI_MODULES 1
@@ -71,6 +74,26 @@ bool parse_string_arg(const std::string &arg, const std::string &prefix,
 
 	value = arg.substr(prefix.size());
 	return !value.empty();
+}
+
+bool parse_size_arg(const std::string &arg, const std::string &prefix,
+					std::size_t &value) {
+	if (arg.rfind(prefix, 0) != 0)
+		return false;
+
+	const auto parsed = arg.substr(prefix.size());
+	if (parsed.empty())
+		return false;
+
+	char *end = nullptr;
+	const unsigned long long converted = std::strtoull(parsed.c_str(), &end, 10);
+	if (end == nullptr || *end != '\0' || converted == 0 ||
+		converted > std::numeric_limits<std::size_t>::max()) {
+		return false;
+	}
+
+	value = static_cast<std::size_t>(converted);
+	return true;
 }
 
 std::string to_lower_copy(std::string value) {
@@ -148,6 +171,11 @@ camera_detection::Options parse_args(int argc, char **argv) {
 
 		if (arg == "--stream") {
 			options.stream_enabled = true;
+			continue;
+		}
+
+		if (arg == "--no-metrics") {
+			options.metrics_dir.clear();
 			continue;
 		}
 
@@ -234,6 +262,15 @@ camera_detection::Options parse_args(int argc, char **argv) {
 			continue;
 		}
 
+		if (parse_string_arg(arg, "--metrics-dir=", options.metrics_dir)) {
+			continue;
+		}
+
+		if (parse_size_arg(arg, "--metrics-queue-capacity=",
+						   options.metrics_queue_capacity)) {
+			continue;
+		}
+
 		if (parse_string_arg(arg, "--replay=", value)) {
 			const auto replay_mode = parse_replay_mode(value);
 			if (!replay_mode) {
@@ -262,6 +299,8 @@ camera_detection::Options parse_args(int argc, char **argv) {
 			<< "Usage: camera_detection [--display] [--no-display] [--stream] "
 			   "[--no-stream] [--input=PATH] "
 			   "[--replay=unpaced|realtime] [--width=N] "
+			   "[--metrics-dir=PATH] [--metrics-queue-capacity=N] "
+			   "[--no-metrics] "
 			   "[--height=N] [--fps=N] [--stream-fps=N] "
 			   "[--preview-width=N] [--display-every=N] [--http-port=N] "
 			   "[--webrtc-encoder=auto|h264-hw|openh264] "
@@ -355,11 +394,29 @@ int main(int argc, char **argv) {
 		std::cout << "Input mode: Raspberry Pi camera\n";
 	}
 
+	std::vector<std::string> command_line;
+	command_line.reserve(static_cast<std::size_t>(argc));
+	for (int i = 0; i < argc; ++i)
+		command_line.emplace_back(argv[i]);
+
+	PipelineMetrics pipeline_metrics;
+	if (!pipeline_metrics.start(options, frame_source.source_fps(),
+								frame_source.expected_frame_count(), command_line)) {
+		std::cerr << pipeline_metrics.error_message() << '\n';
+#if CAMERA_DETECTION_WITH_PI_MODULES
+		pan_tracker.stop();
+#endif
+		return 1;
+	}
+	if (pipeline_metrics.enabled())
+		std::cout << "Pipeline metrics: " << pipeline_metrics.output_dir() << '\n';
+
 #if CAMERA_DETECTION_WITH_PI_MODULES
 	std::unique_ptr<WebRtcStreamer> webrtc_streamer;
 	std::unique_ptr<HttpServer> http_server;
 	if (options.stream_enabled) {
-		webrtc_streamer = std::make_unique<WebRtcStreamer>(options);
+		webrtc_streamer = std::make_unique<WebRtcStreamer>(
+			options, pipeline_metrics.enabled() ? &pipeline_metrics : nullptr);
 		http_server =
 			std::make_unique<HttpServer>(options, webrtc_streamer.get());
 		if (!http_server->start()) {
@@ -403,10 +460,19 @@ int main(int argc, char **argv) {
 
 	// Main loop: read frames, detect the ball, and optionally publish/display.
 	while (!stop_requested()) {
+		const auto read_begin = PipelineClock::now();
 		if (!frame_source.read(packet))
 			break;
+		const auto read_end = PipelineClock::now();
 
 		cv::Mat &frame = packet.frame;
+		FrameMetrics frame_metrics;
+		frame_metrics.meta.source_frame_id = packet.frame_id;
+		frame_metrics.meta.media_pts = packet.media_pts;
+		frame_metrics.meta.scheduled_release = packet.scheduled_release;
+		frame_metrics.meta.received_at = packet.received_at;
+		frame_metrics.read_begin = read_begin;
+		frame_metrics.read_end = read_end;
 		++processed_frame_count;
 		++capture_frame_count;
 		const auto now = std::chrono::steady_clock::now();
@@ -429,13 +495,26 @@ int main(int argc, char **argv) {
 			fps_window_start = now;
 		}
 
+		frame_metrics.detect_begin = PipelineClock::now();
 		DetectionResult det = ball_detector.detect(frame);
+		frame_metrics.detect_end = PipelineClock::now();
+		frame_metrics.result_ready = frame_metrics.detect_end;
+		frame_metrics.detected = det.detected;
+		frame_metrics.center_x = det.center.x;
+		frame_metrics.center_y = det.center.y;
+		frame_metrics.radius = det.radius;
+		frame_metrics.area = det.area;
+		frame_metrics.frame_width = frame.cols;
+		frame_metrics.frame_height = frame.rows;
 
 #if CAMERA_DETECTION_WITH_PI_MODULES
-		pan_tracker.update(det, frame.cols);
+		frame_metrics.control_begin = PipelineClock::now();
+		pan_tracker.update(det, frame.cols, packet.frame_id);
+		frame_metrics.control_end = PipelineClock::now();
 #endif
 
 		if (needs_output_frame) {
+			frame_metrics.overlay_begin = PipelineClock::now();
 			cv::putText(
 				frame, cv::format("CAP %.1f DISP %.1f", capture_fps, display_fps),
 				cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8,
@@ -466,12 +545,19 @@ int main(int argc, char **argv) {
 							cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
 			}
 #endif
+			frame_metrics.overlay_end = PipelineClock::now();
 		}
 
 #if CAMERA_DETECTION_WITH_PI_MODULES
-		if (webrtc_streamer)
-			webrtc_streamer->publish_frame(frame);
+		if (webrtc_streamer) {
+			frame_metrics.publish_begin = PipelineClock::now();
+			frame_metrics.publish_status =
+				webrtc_streamer->publish_frame(frame, frame_metrics.meta);
+			frame_metrics.publish_end = PipelineClock::now();
+		}
 #endif
+
+		pipeline_metrics.record_frame(std::move(frame_metrics));
 
 		if (options.show_preview) {
 			++display_skip_counter;
@@ -515,6 +601,7 @@ int main(int argc, char **argv) {
 	if (webrtc_streamer)
 		webrtc_streamer->stop();
 #endif
+	pipeline_metrics.stop(processed_frame_count, frame_source.failed());
 
 	return exit_code;
 }

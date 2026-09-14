@@ -47,6 +47,7 @@ add_library(perception_core STATIC
     "${CAMERA_DETECTION_SRC_DIR}/camera/camera_pipeline.cpp"
     "${CAMERA_DETECTION_SRC_DIR}/camera/frame_source.cpp"
     "${CAMERA_DETECTION_SRC_DIR}/detection/ball_detector.cpp"
+    "${CAMERA_DETECTION_SRC_DIR}/utils/pipeline_metrics.cpp"
 )
 
 target_include_directories(perception_core

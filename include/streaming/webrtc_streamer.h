@@ -13,13 +13,15 @@
 #include <vector>
 
 #include "utils/app_types.h"
+#include "utils/pipeline_metrics.h"
 
 namespace camera_detection {
 
 class WebRtcStreamer
 {
   public:
-	explicit WebRtcStreamer(const Options &options);
+	explicit WebRtcStreamer(const Options &options,
+						PipelineMetrics *metrics = nullptr);
 	~WebRtcStreamer();
 
 	bool create_offer(std::string &local_offer_sdp,
@@ -28,7 +30,7 @@ class WebRtcStreamer
 	bool set_answer(const std::string &remote_answer_sdp,
 					std::string &error_message,
 					int &http_status);
-	void publish_frame(const cv::Mat &frame);
+	PublishStatus publish_frame(const cv::Mat &frame, const FrameMeta &meta);
 	void stop();
 	bool add_remote_candidate(int sdp_mline_index,
 							  const std::string &candidate,
@@ -49,6 +51,13 @@ class WebRtcStreamer
 		std::string candidate;
 	};
 
+	struct PublishedFrame
+	{
+		cv::Mat frame;
+		FrameMeta meta;
+		std::uint64_t generation = 0;
+	};
+
 	void release_webrtc_sink_pad_locked();
 	bool validate_webrtc_runtime_locked(std::string &error_message);
 	bool create_pipeline_locked(std::string &error_message);
@@ -66,7 +75,7 @@ class WebRtcStreamer
 	void handle_connection_state_change(GObject *object);
 	void handle_ice_candidate(guint mlineindex, const gchar *candidate);
 	void frame_loop();
-	void push_frame_to_pipeline(const cv::Mat &frame);
+	void push_frame_to_pipeline(const PublishedFrame &frame);
 	void bus_loop(GstBus *bus);
 	void mark_terminated(const std::string &reason);
 	bool has_element_factory(const char *name) const;
@@ -87,9 +96,14 @@ class WebRtcStreamer
 	int height_;
 	int stream_fps_;
 	WebRtcEncoder encoder_preference_;
+	PipelineMetrics *metrics_ = nullptr;
 	std::mutex frame_mutex_;
 	std::condition_variable frame_cv_;
-	cv::Mat latest_frame_;
+	PublishedFrame latest_frame_;
+	std::uint64_t last_consumed_generation_ = 0;
+	std::uint64_t next_generation_ = 1;
+	std::uint64_t next_stream_push_id_ = 0;
+	std::optional<std::uint64_t> last_pushed_source_frame_id_;
 	bool frame_running_ = true;
 	std::thread frame_thread_;
 	GstElement *pipeline_ = nullptr;

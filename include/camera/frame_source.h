@@ -27,7 +27,8 @@ class FrameSource {
 
   private:
 	std::optional<std::chrono::nanoseconds> current_media_pts();
-	void pace_realtime(std::chrono::nanoseconds media_pts);
+	std::chrono::steady_clock::time_point
+	pace_realtime(std::chrono::nanoseconds media_pts);
 
 	Options options_;
 	cv::VideoCapture capture_;

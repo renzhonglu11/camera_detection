@@ -11,6 +11,7 @@ namespace camera_detection {
 struct FramePacket {
 	std::uint64_t frame_id = 0;
 	std::optional<std::chrono::nanoseconds> media_pts;
+	std::optional<std::chrono::steady_clock::time_point> scheduled_release;
 	std::chrono::steady_clock::time_point received_at;
 	cv::Mat frame;
 };

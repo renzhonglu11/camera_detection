@@ -103,7 +103,8 @@ void PanTracker::stop() {
 	stop_motion_log();
 }
 
-void PanTracker::update(const DetectionResult &detection, int frame_width) {
+void PanTracker::update(const DetectionResult &detection, int frame_width,
+					std::uint64_t source_frame_id) {
 	if (!enabled_ || !ready_)
 		return;
 
@@ -135,7 +136,7 @@ void PanTracker::update(const DetectionResult &detection, int frame_width) {
 	}
 
 	status_ = mounted_direction > 0 ? "right" : "left";
-	write_degree(next_degree, now);
+	write_degree(next_degree, now, source_frame_id, error);
 }
 
 int PanTracker::clamped_degree(int degree) const {
@@ -161,8 +162,9 @@ void PanTracker::open_motion_log() {
 		return;
 	}
 
-	motion_log_
-		<< "elapsed_ms,unix_ms,channel,angle_degree,status,test_sweep\n";
+	motion_log_ << "elapsed_ms,unix_ms,source_frame_id,channel,pixel_error,"
+					"previous_degree,requested_degree,status,write_begin_us,"
+					"write_end_us,write_duration_us,write_result,test_sweep\n";
 	motion_log_thread_ = std::thread(&PanTracker::motion_log_loop, this);
 	std::cout << "Pan motion CSV: " << log_path << '\n';
 }
@@ -202,19 +204,39 @@ void PanTracker::motion_log_loop() {
 	}
 }
 
-void PanTracker::log_motion(std::chrono::steady_clock::time_point now) {
+void PanTracker::log_motion(
+	std::chrono::steady_clock::time_point write_begin,
+	std::chrono::steady_clock::time_point write_end,
+	std::optional<std::uint64_t> source_frame_id,
+	std::optional<float> pixel_error, int previous_degree, int requested_degree,
+	const char *write_result) {
 	if (!motion_log_)
 		return;
 
 	const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-		now - start_time_);
+		write_end - start_time_);
 	const auto unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::system_clock::now().time_since_epoch());
+	const auto write_begin_us =
+		std::chrono::duration_cast<std::chrono::microseconds>(write_begin -
+														 start_time_);
+	const auto write_end_us = std::chrono::duration_cast<std::chrono::microseconds>(
+		write_end - start_time_);
+	const auto write_duration_us =
+		std::chrono::duration_cast<std::chrono::microseconds>(write_end -
+													 write_begin);
 
 	std::ostringstream row;
-	row << elapsed_ms.count() << ',' << unix_ms.count() << ','
-		<< options_.pan_channel << ',' << current_degree_ << ',' << status_
-		<< ',' << (in_test_sweep_ ? 1 : 0) << '\n';
+	row << elapsed_ms.count() << ',' << unix_ms.count() << ',';
+	if (source_frame_id)
+		row << *source_frame_id;
+	row << ',' << options_.pan_channel << ',';
+	if (pixel_error)
+		row << *pixel_error;
+	row << ',' << previous_degree << ',' << requested_degree << ',' << status_
+		<< ',' << write_begin_us.count() << ',' << write_end_us.count() << ','
+		<< write_duration_us.count() << ',' << write_result << ','
+		<< (in_test_sweep_ ? 1 : 0) << '\n';
 
 	{
 		std::lock_guard<std::mutex> lock(motion_log_mutex_);
@@ -263,12 +285,21 @@ void PanTracker::move_to(int target_degree, int step, int step_ms,
 }
 
 void PanTracker::write_degree(int degree,
-							  std::chrono::steady_clock::time_point now) {
-	current_degree_ = clamped_degree(degree);
+							  std::chrono::steady_clock::time_point now,
+							  std::optional<std::uint64_t> source_frame_id,
+							  std::optional<float> pixel_error) {
+	const int previous_degree = current_degree_;
+	const int requested_degree = clamped_degree(degree);
+	current_degree_ = requested_degree;
+	const auto write_begin = std::chrono::steady_clock::now();
 	setServoDegree(static_cast<uint8_t>(options_.pan_channel),
 				   static_cast<uint8_t>(current_degree_));
+	const auto write_end = std::chrono::steady_clock::now();
 	last_write_ = now;
-	log_motion(now);
+	// The legacy PCA9685 API returns void. T03 will propagate hardware errors;
+	// until then, do not report an unobservable write as successful.
+	log_motion(write_begin, write_end, source_frame_id, pixel_error,
+			   previous_degree, requested_degree, "unknown");
 }
 
 } // namespace camera_detection
