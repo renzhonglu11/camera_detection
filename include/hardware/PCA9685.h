@@ -58,15 +58,16 @@ extern "C" {
 
 extern uint8_t ServoUpDegree;
 extern uint8_t ServoDownDegree;
-int i2c_init(char *i2c_dev, unsigned char i2c_addr);
+int i2c_init(const char *i2c_dev, unsigned char i2c_addr);
+int i2c_close(void);
 int i2c_writeNbyte(unsigned char *buf, int len);
 int i2c_readNbyte(unsigned char *buf, int len);
 int i2c_readReg(uint8_t reg_addr, uint8_t *data);
 int i2c_writeReg(uint8_t reg_addr, uint8_t data);
-void PCA9685_setPWMFreq(float freq);
-void PCA9685_setPWM(uint8_t num, uint16_t on, uint16_t off);
-void setServoPulse(uint8_t n, double pulse);
-void setServoDegree(uint8_t n, uint8_t Degree);
+int PCA9685_setPWMFreq(float freq);
+int PCA9685_setPWM(uint8_t num, uint16_t on, uint16_t off);
+int setServoPulse(uint8_t n, double pulse);
+int setServoDegree(uint8_t n, uint8_t Degree);
 int get_key_board_from_termios();
 int ServoDegreeIncrease(uint8_t Channel, uint8_t Step);
 void processKeyboardEvent(void);

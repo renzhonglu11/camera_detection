@@ -53,3 +53,5 @@ Thumbs.db
 
 # Local configuration (contains sensitive info like IP, paths)
 .env.local
+
+docs/

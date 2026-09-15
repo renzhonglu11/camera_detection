@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(camera_detection LANGUAGES C CXX)
 
+include(CTest)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -183,3 +185,25 @@ else()
 endif()
 
 install(TARGETS camera_detection RUNTIME DESTINATION bin)
+
+if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(pca9685_error_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/pca9685_error_test.cpp"
+        "${CAMERA_DETECTION_SRC_DIR}/hardware/PCA9685.c"
+    )
+
+    target_include_directories(pca9685_error_test
+        PRIVATE "${CAMERA_DETECTION_INCLUDE_DIR}"
+    )
+
+    target_link_options(pca9685_error_test PRIVATE
+        -Wl,--wrap=open
+        -Wl,--wrap=ioctl
+        -Wl,--wrap=read
+        -Wl,--wrap=write
+        -Wl,--wrap=close
+        -Wl,--wrap=usleep
+    )
+
+    add_test(NAME pca9685_error_test COMMAND pca9685_error_test)
+endif()
