@@ -84,5 +84,6 @@ When adding or changing options, update the parser, usage string, relevant defau
 ## Secrets And Local State
 
 - Do not commit `.env.local`, build directories, binaries, sysroot contents, SSH details, or machine-specific generated files.
+- Do not commit camera recordings or other video files. Keep local replay media under `test_data/`; only `test_data/README.md` is versioned. Do not bypass `.githooks/pre-commit`; enable it with `git config core.hooksPath .githooks` when needed.
 - Treat paths in `toolchain.cmake`, `.clangd`, and CMake cache files as local development assumptions. Avoid broad path rewrites unless the task specifically asks for portability work.
 - The working tree may contain user changes. Do not revert unrelated modifications.

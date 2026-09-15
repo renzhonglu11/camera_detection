@@ -1,6 +1,9 @@
 # test_data
 
-This folder is for offline replay samples used by T01.
+This folder is for local offline replay samples used by T01. Video files are
+intentionally ignored by Git and must not be committed. Copy or record a local
+sample before running replay or benchmark commands. Enable the repository's
+pre-commit guard with `git config core.hooksPath .githooks` after cloning.
 
 Expected sample for the first round:
 
@@ -8,9 +11,6 @@ Expected sample for the first round:
 - observed frame size: 1280×720
 - source rate reported by OpenCV: 30 FPS
 - expected frame count: 593
-- SHA-256: `e9701e08bdb45560614c357c48b3c8ae2867ea9a260e5f4d9979a8309ea0ece6`
-- Raspberry Pi path:
-  `/home/rz/cam_proj/PCA9685/example/camera_detection/test_data/blue_ball_basic.mp4`
 - capture device/date and audio-track status: not documented
 
 Usage for quick checks:

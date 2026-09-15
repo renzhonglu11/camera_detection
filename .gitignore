@@ -55,3 +55,30 @@ Thumbs.db
 .env.local
 
 docs/
+
+# Local camera/replay media (never commit)
+test_data/*
+!test_data/README.md
+*.[mM][pP]4
+*.[mM]4[vV]
+*.[mM][oO][vV]
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+*.[mM][pP][eE][gG]
+*.[mM][pP][gG]
+*.[wW][mM][vV]
+*.[fF][lL][vV]
+*.3[gG][pP]
+*.[oO][gG][vV]
+*.[vV][oO][bB]
+*.[hH]26[45]
+*.[hH][eE][vV][cC]
+*.[mM][tT][sS]
+*.[mM]2[tT][sS]
+*.3[gG]2
+*.[mM][xX][fF]
+*.[yY]4[mM]
+*.[aA][sS][fF]
+*.[rR][mM]
+*.[rR][mM][vV][bB]

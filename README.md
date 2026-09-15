@@ -14,6 +14,16 @@ WebRTC camera preview application for Raspberry Pi with a modular project layout
 - `scripts/`: deployment helpers.
 - `tests/`: reserved for tests.
 
+## Repository safety
+
+Camera recordings and replay videos are local-only and ignored by Git. Enable
+the repository hook after cloning so staged video content is rejected even when
+an ignore rule is bypassed:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Build
 
 ```bash
@@ -37,10 +47,11 @@ cmake --build build -j
 ## Offline replay (T01)
 
 The local/CI-safe path is to use a recorded MP4 file and run in replay mode.
+Place the recording under `test_data/`; it remains local and is not versioned.
 
 ```bash
 ./build/camera_detection \
-  --input=/home/rz/cam_proj/PCA9685/example/camera_detection/test_data/blue_ball_basic.mp4 \
+  --input=./test_data/blue_ball_basic.mp4 \
   --replay=unpaced \
   --no-display \
   --no-stream
@@ -58,7 +69,7 @@ If the same file is stable/reusable, run three times to match the T01 acceptance
 expectation for reproducible frame count:
 
 ```bash
-./scripts/run_t01_replay.sh --input=/home/rz/cam_proj/PCA9685/example/camera_detection/test_data/blue_ball_basic.mp4
+./scripts/run_t01_replay.sh --input=./test_data/blue_ball_basic.mp4
 ```
 
 If you only need a one-shot check, add `--runs=1`.
@@ -102,7 +113,7 @@ Configure the two rates independently:
 
 When streaming a file, `--width` and `--height` must match the file's actual
 frame size. File input is not automatically resized, while these options are
-used for the WebRTC raw-video caps. For the included 1280×720 sample:
+used for the WebRTC raw-video caps. For a local 1280×720 sample:
 
 ```bash
 ./camera_detection \
