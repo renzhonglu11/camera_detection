@@ -186,6 +186,22 @@ endif()
 
 install(TARGETS camera_detection RUNTIME DESTINATION bin)
 
+if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+    set(CAMERA_AGENT_TEST_PYTHON
+        "${CMAKE_CURRENT_SOURCE_DIR}/piAgent/.venv/bin/python"
+        CACHE FILEPATH "Python interpreter with the Agent subproject dependencies"
+    )
+    if(EXISTS "${CAMERA_AGENT_TEST_PYTHON}")
+        add_test(NAME camera_agent_test
+            COMMAND "${CAMERA_AGENT_TEST_PYTHON}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_camera_agent.py"
+        )
+        set_tests_properties(camera_agent_test PROPERTIES
+            ENVIRONMENT "PYDANTIC_AI_NO_BANNER=1"
+        )
+    endif()
+endif()
+
 if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(pca9685_error_test
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/pca9685_error_test.cpp"
