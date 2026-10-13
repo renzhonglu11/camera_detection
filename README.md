@@ -38,6 +38,30 @@ cmake -S . -B build -DCAMERA_DETECTION_BUILD_PI_APP=OFF
 cmake --build build -j
 ```
 
+## Python agent environment
+
+The standalone `piAgent/` subproject uses uv, Python 3.12, and PydanticAI with
+Codex OAuth. Set up and check it from the repository root:
+
+```bash
+uv sync --project piAgent --locked
+uv run --project piAgent --locked camera-agent check
+uv run --project piAgent --locked camera-agent run "Read the runtime information."
+```
+
+Deploy source and synchronize the ARM Python environment on the Pi:
+
+```bash
+./scripts/deploy_agent.sh mypi --bootstrap
+./scripts/deploy_agent.sh mypi --login
+./scripts/deploy_agent.sh mypi --run -- "Read the runtime information."
+```
+
+The first deployment installs uv and Python if needed. Later deployments only
+need `./scripts/deploy_agent.sh mypi`. The Agent's `.venv/` and credentials are
+local to each machine. See [piAgent/README.md](piAgent/README.md) for authentication,
+model settings, combined C++ deployment, and verification commands.
+
 ## Deploy
 
 ```bash

@@ -36,6 +36,8 @@ Options:
   target-host  SSH host/alias (default: mypi, or PI_HOST env var)
   --run        Run the binary on the Pi after deploy
   --sudo       Run with sudo (only applies with --run)
+  --with-agent Upload Python Agent code and synchronize its uv environment
+  --bootstrap-agent Also install uv and Python for the Agent if needed
   -h, --help   Show this help
 
 Examples:
@@ -50,6 +52,8 @@ TARGET="${PI_HOST:-mypi}"
 TARGET_SET=0
 RUN_AFTER=0
 USE_SUDO=0
+DEPLOY_AGENT=0
+BOOTSTRAP_AGENT=0
 REMOTE_ARGS=()
 
 CONTROL_PATH="/tmp/deploy_run_camera_%r_%h_%p"
@@ -72,6 +76,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sudo)
       USE_SUDO=1
+      shift
+      ;;
+    --with-agent)
+      DEPLOY_AGENT=1
+      shift
+      ;;
+    --bootstrap-agent)
+      DEPLOY_AGENT=1
+      BOOTSTRAP_AGENT=1
       shift
       ;;
     -h|--help)
@@ -115,6 +128,14 @@ rsync -avz --progress -e "ssh -o ControlMaster=auto -o ControlPersist=2m -o Cont
 
 echo "Setting execute permission on Pi..."
 ssh "${SSH_COMMON_OPTS[@]}" "$TARGET" "chmod +x '$REMOTE_BIN'"
+
+if [[ "$DEPLOY_AGENT" -eq 1 ]]; then
+  AGENT_DEPLOY_ARGS=("$TARGET")
+  if [[ "$BOOTSTRAP_AGENT" -eq 1 ]]; then
+    AGENT_DEPLOY_ARGS+=(--bootstrap)
+  fi
+  "$SCRIPT_DIR/deploy_agent.sh" "${AGENT_DEPLOY_ARGS[@]}"
+fi
 
 if [[ "$RUN_AFTER" -eq 1 ]]; then
   REMOTE_COMMAND=("'$REMOTE_BIN'")
