@@ -131,6 +131,7 @@ if(CAMERA_DETECTION_BUILD_PI_APP)
     endforeach()
 
     target_sources(camera_detection PRIVATE
+        "${CAMERA_DETECTION_SRC_DIR}/control/gimbal_controller.cpp"
         "${CAMERA_DETECTION_SRC_DIR}/control/pan_tracker.cpp"
         "${CAMERA_DETECTION_SRC_DIR}/hardware/PCA9685.c"
         "${CAMERA_DETECTION_SRC_DIR}/hardware/http_server.cpp"

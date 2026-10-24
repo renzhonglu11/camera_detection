@@ -1,18 +1,17 @@
 #include "control/pan_tracker.h"
 
-#include "hardware/PCA9685.h"
-
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <sstream>
-#include <vector>
+
+#include <unistd.h>
 
 namespace camera_detection {
 
-PanTracker::PanTracker(const Options &options)
-	: options_(options), enabled_(options.pan_tracking),
+PanTracker::PanTracker(const Options &options, GimbalController &gimbal)
+	: options_(options), gimbal_(gimbal), enabled_(options.pan_tracking),
 	  current_degree_(options.pan_center_degree) {}
 
 PanTracker::~PanTracker() {
@@ -41,21 +40,13 @@ bool PanTracker::start() {
 	current_degree_ = clamped_degree(options_.pan_center_degree);
 	start_time_ = std::chrono::steady_clock::now();
 
-	std::vector<char> i2c_device(options_.pan_i2c_device.begin(),
-								 options_.pan_i2c_device.end());
-	i2c_device.push_back('\0');
-
-	if (i2c_init(i2c_device.data(), I2C_ADDR) < 0) {
+	if (!gimbal_.ready()) {
 		status_ = "i2c failed";
-		std::cerr << "Pan tracking disabled: failed to open "
-				  << options_.pan_i2c_device << '\n';
+		std::cerr << "Pan tracking disabled: gimbal is not ready\n";
 		enabled_ = false;
 		return false;
 	}
 
-	i2c_writeReg(MODE1, 0x80);
-	usleep(10000);
-	PCA9685_setPWMFreq(60);
 	open_motion_log();
 	status_ = "init";
 	write_degree(current_degree_, std::chrono::steady_clock::now());
@@ -67,7 +58,6 @@ bool PanTracker::start() {
 	}
 	status_ = "ready";
 	std::cout << "Pan tracking ready: device=" << options_.pan_i2c_device
-			  << " address=0x" << std::hex << I2C_ADDR << std::dec
 			  << " channel=" << options_.pan_channel
 			  << " range=" << options_.pan_min_degree << ".."
 			  << options_.pan_max_degree << " center=" << current_degree_
@@ -292,8 +282,7 @@ void PanTracker::write_degree(int degree,
 	const int requested_degree = clamped_degree(degree);
 	current_degree_ = requested_degree;
 	const auto write_begin = std::chrono::steady_clock::now();
-	setServoDegree(static_cast<uint8_t>(options_.pan_channel),
-				   static_cast<uint8_t>(current_degree_));
+	gimbal_.write(GimbalAxis::Pan, current_degree_);
 	const auto write_end = std::chrono::steady_clock::now();
 	last_write_ = now;
 	// The legacy PCA9685 API returns void. T03 will propagate hardware errors;
