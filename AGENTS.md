@@ -54,7 +54,16 @@ If changing CMake, toolchain paths, dependency discovery, or generated compile c
 cmake -S . -B build-cross -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake
 ```
 
-There are no project tests at the moment. If adding tests, keep them under `tests/` and wire them into CMake rather than using ad hoc commands.
+Tests live under `tests/` and are wired into CMake (`ctest`). Keep new tests there rather than using ad hoc commands.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
+
+- host build with `CAMERA_DETECTION_BUILD_PI_APP=OFF` plus `ctest`;
+- Pi app build with Pi modules on, on a native arm64 runner in a `debian:bookworm` container (system packages replace the local sysroot);
+- piAgent `uv sync --locked`, `ruff check --select E4,E7,E9,F`, and `tests/test_camera_agent.py`;
+- `scripts/check_no_videos.sh`, the CI counterpart of the pre-commit hook.
+
+CI only builds and tests. Deployment to the Pi stays manual through `scripts/deploy_run_camera.sh`.
 
 ## Coding Conventions
 
