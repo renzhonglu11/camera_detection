@@ -1,5 +1,7 @@
 # camera_detection
 
+[![CI](https://github.com/renzhonglu11/camera_detection/actions/workflows/ci.yml/badge.svg)](https://github.com/renzhonglu11/camera_detection/actions/workflows/ci.yml)
+
 WebRTC camera preview application for Raspberry Pi with a modular project layout.
 
 ## Layout
@@ -30,6 +32,13 @@ git config core.hooksPath .githooks
 cmake -S . -B build-cross -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake
 cmake --build build-cross -j
 ```
+
+### Continuous integration
+
+GitHub Actions builds the host and arm64 Pi variants, runs `ctest`, checks and
+tests `piAgent/`, and rejects tracked video files on every pull request. The
+arm64 artifact is built against Debian bookworm packages, not the local
+sysroot, so deployment still uses `build-cross/`.
 
 ### Minimal local replay build (no Raspberry Pi modules)
 

@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  repo-safety:
+    name: No tracked videos
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check_no_videos.sh
+
+  host:
+    name: Host build + C++ tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake libopencv-dev
+      - name: Configure (Pi modules off)
+        run: cmake -S . -B build -DCAMERA_DETECTION_BUILD_PI_APP=OFF -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  pi-app:
+    name: Pi app build (arm64, Debian bookworm)
+    # Native arm64 runner + bookworm container stands in for the local
+    # Raspberry Pi sysroot, so the Pi-only modules (PCA9685, HTTP, WebRTC)
+    # are compiled on every change.
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake git \
+            libopencv-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev
+      - uses: actions/checkout@v4
+      - name: Configure (Pi modules on)
+        run: >
+          cmake -S . -B build-pi
+          -DCAMERA_DETECTION_BUILD_PI_APP=ON
+          -DOPENCV_INCLUDE_DIR=/usr/include/opencv4
+          -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build-pi -j"$(nproc)"
+      - name: Test
+        run: ctest --test-dir build-pi --output-on-failure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camera_detection-arm64-bookworm
+          path: |
+            build-pi/camera_detection
+            build-pi/index.html
+          retention-days: 7
+
+  pi-agent:
+    name: piAgent lint + tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked dependencies
+        working-directory: piAgent
+        run: uv sync --locked
+      - name: Lint
+        run: uvx ruff@0.16.9 check --select E4,E7,E9,F piAgent/src tests scripts
+      - name: Test
+        working-directory: piAgent
+        env:
+          PYDANTIC_AI_NO_BANNER: "1"
+        run: uv run python ../tests/test_camera_agent.py
