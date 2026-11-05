@@ -1,5 +1,6 @@
 #pragma once
 
+#include "control/gimbal_controller.h"
 #include "detection/ball_detector.h"
 #include "utils/app_types.h"
 
@@ -17,7 +18,7 @@ namespace camera_detection {
 
 class PanTracker {
 public:
-	explicit PanTracker(const Options &options);
+	PanTracker(const Options &options, GimbalController &gimbal);
 	~PanTracker();
 
 	bool start();
@@ -49,6 +50,7 @@ private:
 				  std::optional<float> pixel_error = std::nullopt);
 
 	Options options_;
+	GimbalController &gimbal_;
 	bool enabled_ = false;
 	bool ready_ = false;
 	bool stopped_ = false;

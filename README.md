@@ -209,3 +209,30 @@ Servo movement commands are logged to `pan_motion.csv` by default. Override the 
 ```bash
 ./camera_detection --pan-tracking --pan-log-csv=/tmp/pan_motion.csv --no-display
 ```
+
+## Tilt Control
+
+The vertical servo is opt-in. `--tilt-control` drives it to its center on
+startup, shows its angle on preview frames, and returns it to center on
+shutdown with the same `--pan-return-*` settings. It shares the PCA9685 on
+`--pan-i2c-device` with pan; `GimbalController` owns that connection and every
+servo write for both axes.
+
+```bash
+./camera_detection --tilt-control --no-display
+```
+
+Defaults are channel 0 with a 15..145 degree range and a 90 degree center.
+Override them with `--tilt-channel=N`, `--tilt-min-degree=N`,
+`--tilt-max-degree=N`, and `--tilt-center-degree=N`. Pan and tilt must use
+different channels.
+
+To verify the tilt wiring and range without starting the camera:
+
+```bash
+./camera_detection --tilt-test-sweep --no-display
+```
+
+The tilt sweep uses the `--pan-test-hold-ms`, `--pan-test-step`, and
+`--pan-test-step-ms` settings and exits after returning to center. It can be
+combined with `--pan-test-sweep`; pan sweeps first.

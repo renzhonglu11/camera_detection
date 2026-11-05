@@ -22,6 +22,7 @@
 #endif
 
 #if CAMERA_DETECTION_WITH_PI_MODULES
+#include "control/gimbal_controller.h"
 #include "control/pan_tracker.h"
 #include "hardware/http_server.h"
 #include "streaming/webrtc_streamer.h"
@@ -214,6 +215,21 @@ camera_detection::Options parse_args(int argc, char **argv) {
 			continue;
 		}
 
+		if (arg == "--tilt-control") {
+			options.tilt_control = true;
+			continue;
+		}
+
+		if (arg == "--no-tilt-control") {
+			options.tilt_control = false;
+			continue;
+		}
+
+		if (arg == "--tilt-test-sweep") {
+			options.tilt_test_sweep = true;
+			continue;
+		}
+
 		if (parse_int_arg(arg, "--width=", options.width) ||
 			parse_int_arg(arg, "--height=", options.height) ||
 			parse_int_arg(arg, "--fps=", options.fps) ||
@@ -245,7 +261,15 @@ camera_detection::Options parse_args(int argc, char **argv) {
 			parse_nonnegative_int_arg(arg, "--pan-deadzone=",
 									  options.pan_deadzone) ||
 			parse_nonnegative_int_arg(arg, "--pan-startup-hold-ms=",
-									  options.pan_startup_hold_ms)) {
+									  options.pan_startup_hold_ms) ||
+			parse_nonnegative_int_arg(arg, "--tilt-channel=",
+									  options.tilt_channel) ||
+			parse_nonnegative_int_arg(arg, "--tilt-center-degree=",
+									  options.tilt_center_degree) ||
+			parse_nonnegative_int_arg(arg, "--tilt-min-degree=",
+									  options.tilt_min_degree) ||
+			parse_nonnegative_int_arg(arg, "--tilt-max-degree=",
+									  options.tilt_max_degree)) {
 			continue;
 		}
 
@@ -313,15 +337,22 @@ camera_detection::Options parse_args(int argc, char **argv) {
 			   "[--no-pan-return-center-on-exit] [--pan-return-step=N] "
 			   "[--pan-return-step-ms=N] "
 			   "[--pan-test-hold-ms=N] [--pan-test-step=N] "
-			   "[--pan-test-step-ms=N] [--pan-log-csv=PATH]\n";
+			   "[--pan-test-step-ms=N] [--pan-log-csv=PATH] "
+			   "[--tilt-control] [--no-tilt-control] [--tilt-channel=N] "
+			   "[--tilt-center-degree=N] [--tilt-min-degree=N] "
+			   "[--tilt-max-degree=N] [--tilt-test-sweep]\n";
 		std::exit(2);
 	}
 
 	if (options.pan_test_sweep)
 		options.pan_tracking = true;
-	if (!options.input_path.empty() && options.pan_tracking) {
-		std::cerr << "Offline input cannot be combined with pan tracking or "
-					 "pan test sweep; no servo output is allowed during replay\n";
+	if (options.tilt_test_sweep)
+		options.tilt_control = true;
+	if (!options.input_path.empty() &&
+		(options.pan_tracking || options.tilt_control)) {
+		std::cerr << "Offline input cannot be combined with pan tracking, tilt "
+					 "control, or test sweeps; no servo output is allowed "
+					 "during replay\n";
 		std::exit(2);
 	}
 	if (options.stream_fps > options.fps) {
@@ -353,18 +384,37 @@ int main(int argc, char **argv) {
 #endif
 
 #if CAMERA_DETECTION_WITH_PI_MODULES
-	PanTracker pan_tracker(options);
+	GimbalController gimbal(options);
+	gimbal.start();
+	PanTracker pan_tracker(options, gimbal);
 	const bool pan_started = pan_tracker.start();
 	std::cout << "Pan tracking: " << pan_tracker.status() << '\n';
+	const bool tilt_ready = gimbal.ready() && gimbal.enabled(GimbalAxis::Tilt);
+	if (options.tilt_control)
+		std::cout << "Tilt control: " << (tilt_ready ? "ready" : "failed")
+				  << '\n';
 
-	if (options.pan_test_sweep) {
-		if (!pan_started || !pan_tracker.ready()) {
+	if (options.pan_test_sweep || options.tilt_test_sweep) {
+		bool sweep_ok = true;
+		if (options.pan_test_sweep && (!pan_started || !pan_tracker.ready())) {
 			std::cerr << "Pan test sweep failed\n";
-			return 1;
+			sweep_ok = false;
+		}
+		if (options.tilt_test_sweep) {
+			if (tilt_ready) {
+				gimbal.run_test_sweep(GimbalAxis::Tilt);
+			} else {
+				std::cerr << "Tilt test sweep failed\n";
+				sweep_ok = false;
+			}
 		}
 
-		std::cout << "Pan test sweep complete; exiting without ball detection\n";
 		pan_tracker.stop();
+		gimbal.stop();
+		if (!sweep_ok)
+			return 1;
+
+		std::cout << "Test sweep complete; exiting without ball detection\n";
 		return 0;
 	}
 
@@ -544,6 +594,13 @@ int main(int argc, char **argv) {
 							cv::Point(10, 90), cv::FONT_HERSHEY_SIMPLEX, 0.7,
 							cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
 			}
+			if (tilt_ready) {
+				cv::putText(frame,
+							cv::format("Tilt %d deg",
+									   gimbal.angle(GimbalAxis::Tilt)),
+							cv::Point(10, 120), cv::FONT_HERSHEY_SIMPLEX, 0.7,
+							cv::Scalar(255, 255, 0), 2, cv::LINE_AA);
+			}
 #endif
 			frame_metrics.overlay_end = PipelineClock::now();
 		}
@@ -596,6 +653,7 @@ int main(int argc, char **argv) {
 
 #if CAMERA_DETECTION_WITH_PI_MODULES
 	pan_tracker.stop();
+	gimbal.stop();
 	if (http_server)
 		http_server->stop();
 	if (webrtc_streamer)

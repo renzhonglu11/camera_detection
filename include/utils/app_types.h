@@ -42,6 +42,12 @@ struct Options {
 	int pan_test_step = 1;
 	int pan_test_step_ms = 30;
 	std::string pan_log_csv = "pan_motion.csv";
+	bool tilt_control = false;
+	int tilt_channel = 0;
+	int tilt_center_degree = 90;
+	int tilt_min_degree = 15;
+	int tilt_max_degree = 145;
+	bool tilt_test_sweep = false;
 };
 
 } // namespace camera_detection
